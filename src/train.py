@@ -93,8 +93,8 @@ def main():
         optimizer = optim.Adam(model.parameters(), lr=float(train_cfg['learning_rate']))
 
     # 4. Training Loop
-    # We will do a small test run of 1 epoch for now
-    epochs = 1 # override config for quick test
+    # We read epochs from the config file (e.g. 50)
+    epochs = train_cfg['epochs']
     checkpoint_dir = os.path.join(args.experiment_dir, 'checkpoints')
     os.makedirs(checkpoint_dir, exist_ok=True)
     
