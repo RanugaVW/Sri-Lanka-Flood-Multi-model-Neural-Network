@@ -49,6 +49,37 @@ def train(model, dataloader, optimizer, criterion, device):
         
     return total_loss / len(dataloader) if len(dataloader) > 0 else 0
 
+def validate(model, dataloader, criterion, device):
+    model.eval()
+    total_loss = 0
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            temporal_features = batch['temporal_features'].to(device)
+            terrain_features = batch['terrain_features'][0].to(device)
+            sar_chips = batch['sar_chips'][0].to(device)
+            has_sar = batch['has_sar'][0].to(device)
+            targets = batch['targets'][0].to(device)
+            
+            edge_index_flow = batch['edge_index_flow'][0].to(device)
+            edge_index_spatial = batch['edge_index_spatial'][0].to(device)
+            edge_weight_spatial = batch['edge_weight_spatial'][0].to(device)
+            
+            predictions = model(
+                temporal_features[0],
+                terrain_features, 
+                sar_chips, 
+                has_sar, 
+                edge_index_flow, 
+                edge_index_spatial, 
+                edge_weight_spatial
+            )
+            
+            loss = criterion(predictions, targets)
+            total_loss += loss.item()
+            
+    return total_loss / len(dataloader) if len(dataloader) > 0 else 0
+
 def main():
     parser = argparse.ArgumentParser(description="Train Flood Early-Warning Model")
     parser.add_argument('--experiment_dir', type=str, default='experiments/wp2_baselines', help='Experiment directory')
@@ -77,6 +108,15 @@ def main():
     
     print(f"Train Dataset size: {len(train_dataset)}")
 
+    val_dataset = FloodDataset(
+        panel_path=data_cfg['data_paths']['panel'],
+        nodes_path=data_cfg['data_paths']['nodes'],
+        edges_path=data_cfg['data_paths']['edges_flow'],
+        split_type='val'
+    )
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    print(f"Val Dataset size: {len(val_dataset)}")
+
     # 2. Model setup
     model = FloodModel(config=model_cfg).to(device)
     print("Model initialized.")
@@ -99,9 +139,20 @@ def main():
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     print(f"Starting training for {epochs} epochs...")
+    best_val_loss = float('inf')
+    
     for epoch in range(epochs):
         train_loss = train(model, train_loader, optimizer, criterion, device)
-        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f}")
+        val_loss = validate(model, val_loader, criterion, device)
+        print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            checkpoint_path = os.path.join(checkpoint_dir, 'best_model.pth')
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"Saved new best model with Val Loss: {val_loss:.4f}")
+
         
 if __name__ == '__main__':
     main()
