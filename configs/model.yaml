@@ -1,0 +1,42 @@
+temporal_encoder:
+  type: gru                 # gru | tcn | temporal_attention
+  window_days: 14            # try 7, 14, 30 as an ablation
+  hidden_dim: 128
+  num_layers: 1
+
+film_terrain:
+  input_dim: 9
+  hidden_dim: 64
+  output_dim: 128            # gamma/beta each 128-dim
+
+sar_cnn:
+  enabled: true               # false = ablation without SAR
+  input_channels: 2
+  input_size: 512
+  embedding_dim: 64
+  backbone: resnet18_scratch
+  missing_chip_strategy: learned_embedding   # vs. zero_pad
+
+fusion:
+  concat_dim: 320             # confirm 320 vs 192 per §2.5 note before running
+  hidden_dim: 192
+  output_dim: 128
+
+graph:
+  mode: single                # single | dual_branch_gated
+  layer: gatv2
+  num_layers: 2
+  heads: 4
+  spatial_edge_decay_km: 40
+  learn_edge_weights: true    # ablation: compare against fixed exp(-d/40) per HydroGAT finding
+
+heads:
+  hidden_dim: 64
+  outputs: [flood_t1, flood_t2, flood_t3, onset, discharge_t1, zscore_3d_max]
+
+loss:
+  flood_loss: focal_bce
+  focal_gamma: 2.0
+  use_label_confidence_weighting: true
+  regression_loss: huber
+  regression_weight: 0.3

@@ -1,0 +1,14 @@
+data_paths:
+  panel: data/processed/flood_dataset.parquet
+  nodes: data/processed/nodes.csv
+  edges_flow: data/processed/edges.csv
+  edges_spatial: data/processed/edges.csv
+  sar_chips: data/sar_chips/
+
+splits:
+  temporal:
+    train_years: [2020, 2021, 2022]
+    val_years: [2023]
+    test_years: [2024]
+  basin_holdout:
+    holdout_basin: "Gin"

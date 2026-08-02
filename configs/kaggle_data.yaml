@@ -1,0 +1,19 @@
+data_paths:
+  # Kaggle mounts datasets in the /kaggle/input/ directory.
+  # IMPORTANT: Update the exact folder name 'your-tabular-dataset-name' below
+  # to whatever it is called in your Kaggle notebook's data panel.
+  panel: /kaggle/input/your-tabular-dataset-name/flood_dataset.parquet
+  nodes: /kaggle/input/your-tabular-dataset-name/nodes.csv
+  edges_flow: /kaggle/input/your-tabular-dataset-name/edges.csv
+  edges_spatial: /kaggle/input/your-tabular-dataset-name/edges.csv
+  
+  # Same for your image dataset.
+  sar_chips: /kaggle/input/your-image-dataset-name/sar_chips/
+
+splits:
+  temporal:
+    train_years: [2020, 2021, 2022]
+    val_years: [2023]
+    test_years: [2024]
+  basin_holdout:
+    holdout_basin: "Gin"

@@ -1,0 +1,7 @@
+optimizer: adamw
+learning_rate: 1e-4
+weight_decay: 1e-5
+epochs: 50
+batch_size: 64
+patience: 10
+seeds: [42, 43, 44, 45, 46]
