@@ -42,9 +42,9 @@ class MultiTaskLoss(nn.Module):
     - Huber regression terms for:
       discharge_t1, zscore_3d_max
     """
-    def __init__(self, focal_gamma=2.0, regression_weight=0.3):
+    def __init__(self, focal_gamma=2.0, focal_alpha=0.25, regression_weight=0.3):
         super().__init__()
-        self.classification_loss = FocalLossWithConfidence(gamma=focal_gamma, reduction='mean')
+        self.classification_loss = FocalLossWithConfidence(alpha=focal_alpha, gamma=focal_gamma, reduction='mean')
         self.regression_loss = nn.HuberLoss(reduction='mean')
         self.regression_weight = regression_weight
 

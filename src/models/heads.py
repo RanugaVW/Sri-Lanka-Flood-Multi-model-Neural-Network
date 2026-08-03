@@ -4,28 +4,30 @@ import torch.nn as nn
 class OutputHeads(nn.Module):
     """
     Output Heads.
-    As per ARCHITECTURE_SPEC.md 2.7:
-    - Per-node MLP: Linear(128, 64) -> ReLU -> Linear(64, 6)
-    - 6 outputs: P(flood t+1), P(flood t+2), P(flood t+3), onset, discharge_t1, zscore_3d_max
-    - Sigmoid on first 4, linear on last 2.
+    - Decoupled MLPs for Classification (4 outputs) and Regression (2 outputs).
+    - Prevents negative transfer between probabilities and continuous levels.
     """
-    def __init__(self, in_features=128, hidden_features=64, num_outputs=6):
+    def __init__(self, in_features=128, hidden_features=64):
         super().__init__()
-        self.mlp = nn.Sequential(
+        self.cls_head = nn.Sequential(
             nn.Linear(in_features, hidden_features),
             nn.ReLU(),
-            nn.Linear(hidden_features, num_outputs)
+            nn.Linear(hidden_features, 4)
+        )
+        self.reg_head = nn.Sequential(
+            nn.Linear(in_features, hidden_features),
+            nn.ReLU(),
+            nn.Linear(hidden_features, 2)
         )
         self.sigmoid = nn.Sigmoid()
         
     def forward(self, node_embeddings):
         # node_embeddings: [num_nodes, 128]
-        logits = self.mlp(node_embeddings) # [num_nodes, 6]
+        cls_logits = self.cls_head(node_embeddings) # [num_nodes, 4]
+        reg_preds = self.reg_head(node_embeddings)  # [num_nodes, 2]
         
-        # Apply sigmoid to the first 4 (probabilities / binary onset)
-        probs = self.sigmoid(logits[:, :4])
+        # Apply sigmoid to classification outputs (probabilities / binary onset)
+        probs = self.sigmoid(cls_logits)
         
-        # Leave last 2 as linear (regression)
-        regression = logits[:, 4:]
-        
-        return torch.cat([probs, regression], dim=1)
+        # Concatenate for backwards compatibility with MultiTaskLoss indexing
+        return torch.cat([probs, reg_preds], dim=1)

@@ -124,6 +124,7 @@ def main():
     # 3. Loss & Optimizer
     criterion = MultiTaskLoss(
         focal_gamma=model_cfg['loss']['focal_gamma'],
+        focal_alpha=model_cfg['loss'].get('focal_alpha', 0.25),
         regression_weight=model_cfg['loss']['regression_weight']
     )
     

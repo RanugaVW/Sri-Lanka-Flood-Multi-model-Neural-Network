@@ -1,21 +1,25 @@
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18
+from torchvision.models import resnet18, ResNet18_Weights
 
 class SARCNN(nn.Module):
     """
-    Modality 3: SAR CNN.
-    As per ARCHITECTURE_SPEC.md 2.4:
-    - Input: [batch, 2, 512, 512] (VV+VH)
-    - ResNet-18-style, trained from scratch. Final embedding [batch, 64].
-    - Missing chip strategy: presence mask with learned embedding.
+    Modality 3: Enhanced SAR CNN.
+    - Pre-processing: Average Pooling for despeckling noise.
+    - Architecture: Pre-trained ResNet-18 (ImageNet weights).
+    - 1x1 Conv maps 2-channel SAR to 3-channel input for ResNet.
     """
     def __init__(self, input_channels=2, embedding_dim=64):
         super().__init__()
-        # ResNet18 from scratch
-        self.cnn = resnet18(weights=None)
-        # Adapt for 2 input channels instead of 3
-        self.cnn.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        # Despeckle layer: 3x3 Average Pooling to reduce SAR speckle noise
+        self.despeckle = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
+        
+        # Map 2-channel SAR to 3-channel to utilize ImageNet weights
+        self.channel_map = nn.Conv2d(input_channels, 3, kernel_size=1)
+        
+        # Pre-trained ResNet18
+        self.cnn = resnet18(weights=ResNet18_Weights.DEFAULT)
+        
         # Change fc output to embedding_dim
         self.cnn.fc = nn.Linear(self.cnn.fc.in_features, embedding_dim)
         
@@ -34,7 +38,12 @@ class SARCNN(nn.Module):
         valid_indices = torch.where(has_sar)[0]
         if len(valid_indices) > 0:
             valid_chips = sar_chips[valid_indices]
-            output[valid_indices] = self.cnn(valid_chips)
+            
+            # Apply enhancements
+            clean_chips = self.despeckle(valid_chips)
+            rgb_chips = self.channel_map(clean_chips)
+            
+            output[valid_indices] = self.cnn(rgb_chips)
             
         # Where has_sar is False, use missing_embedding
         missing_indices = torch.where(~has_sar)[0]
