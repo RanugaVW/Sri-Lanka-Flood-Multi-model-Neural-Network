@@ -16,41 +16,7 @@ def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
-def main():
-    parser = argparse.ArgumentParser(description="Evaluate Flood Early-Warning Model")
-    parser.add_argument('--experiment_dir', type=str, default='experiments/wp2_baselines', help='Experiment directory')
-    parser.add_argument('--data_config', type=str, default='configs/data.yaml', help='Path to data config file')
-    args = parser.parse_args()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Load Configs
-    data_cfg = load_config(args.data_config)
-    model_cfg = load_config('configs/model.yaml')
-    
-    # Load val dataset
-    val_dataset = FloodDataset(
-        panel_path=data_cfg['data_paths']['panel'],
-        nodes_path=data_cfg['data_paths']['nodes'],
-        edges_path=data_cfg['data_paths']['edges_flow'],
-        split_type='val'
-    )
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
-    
-    # Load model
-    model = FloodModel(config=model_cfg).to(device)
-    checkpoint_path = os.path.join(args.experiment_dir, 'checkpoints', 'best_model.pth')
-    if not os.path.exists(checkpoint_path):
-        print(f"Checkpoint not found at {checkpoint_path}")
-        return
-        
-    # weights_only=True isn't supported in all older torch versions, so let's omit if not needed
-    try:
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
-    except TypeError:
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    model.eval()
-    
+def evaluate_model(model, val_loader, device, output_file=None):
     all_class_preds = []
     all_class_targets = []
     all_reg_preds = []
@@ -175,11 +141,48 @@ def main():
         
         results += f"| {name} | {r2:.4f} | {mae:.4f} | {rmse:.4f} |\n"
         
-    # Write to MD file
-    os.makedirs('Docs', exist_ok=True)
-    with open('Docs/evaluation_results.md', 'w') as f:
-        f.write(results)
+    if output_file:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, 'w') as f:
+            f.write(results)
+    return results
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate Flood Early-Warning Model")
+    parser.add_argument('--experiment_dir', type=str, default='experiments/wp2_baselines', help='Experiment directory')
+    parser.add_argument('--data_config', type=str, default='configs/data.yaml', help='Path to data config file')
+    args = parser.parse_args()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Load Configs
+    data_cfg = load_config(args.data_config)
+    model_cfg = load_config('configs/model.yaml')
+    
+    # Load val dataset
+    val_dataset = FloodDataset(
+        panel_path=data_cfg['data_paths']['panel'],
+        nodes_path=data_cfg['data_paths']['nodes'],
+        edges_path=data_cfg['data_paths']['edges_flow'],
+        split_type='val'
+    )
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    
+    # Load model
+    model = FloodModel(config=model_cfg).to(device)
+    checkpoint_path = os.path.join(args.experiment_dir, 'checkpoints', 'best_model.pth')
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint not found at {checkpoint_path}")
+        return
         
+    # weights_only=True isn't supported in all older torch versions, so let's omit if not needed
+    try:
+        model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    except TypeError:
+        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    model.eval()
+    
+    evaluate_model(model, val_loader, device, output_file='Docs/evaluation_results.md')
     print("Evaluation complete. Results written to Docs/evaluation_results.md")
 
 if __name__ == '__main__':

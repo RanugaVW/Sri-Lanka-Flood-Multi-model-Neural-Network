@@ -8,6 +8,10 @@ from models.flood_model import FloodModel
 from losses.multitask_loss import MultiTaskLoss
 import argparse
 
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from eval.evaluate_metrics import evaluate_model
+
 def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
@@ -154,6 +158,12 @@ def main():
             torch.save(model.state_dict(), checkpoint_path)
             print(f"Saved new best model with Val Loss: {val_loss:.4f}")
 
+        # Run full metrics evaluation every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            print(f"--- Running full metrics evaluation at Epoch {epoch+1} ---")
+            eval_results = evaluate_model(model, val_loader, device)
+            print(eval_results)
+            print("------------------------------------------------------")
         
 if __name__ == '__main__':
     main()
