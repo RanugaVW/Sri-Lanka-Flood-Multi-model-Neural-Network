@@ -10,15 +10,22 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from data.dataset import FloodDataset
 from models.flood_model import FloodModel
 
+import argparse
+
 def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
 def main():
+    parser = argparse.ArgumentParser(description="Evaluate Flood Early-Warning Model")
+    parser.add_argument('--experiment_dir', type=str, default='experiments/wp2_baselines', help='Experiment directory')
+    parser.add_argument('--data_config', type=str, default='configs/data.yaml', help='Path to data config file')
+    args = parser.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Load Configs
-    data_cfg = load_config('configs/data.yaml')
+    data_cfg = load_config(args.data_config)
     model_cfg = load_config('configs/model.yaml')
     
     # Load val dataset
@@ -32,7 +39,7 @@ def main():
     
     # Load model
     model = FloodModel(config=model_cfg).to(device)
-    checkpoint_path = 'experiments/checkpoints/best_model.pth'
+    checkpoint_path = os.path.join(args.experiment_dir, 'checkpoints', 'best_model.pth')
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found at {checkpoint_path}")
         return
