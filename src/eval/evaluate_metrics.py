@@ -3,7 +3,7 @@ import yaml
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, r2_score, mean_absolute_error, mean_squared_error, average_precision_score, roc_auc_score, brier_score_loss, confusion_matrix
 
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -99,31 +99,60 @@ def main():
     results = "# Model Evaluation Results\n\n"
     
     results += "## Classification Metrics (Optimal Threshold)\n\n"
-    results += "| Target | Threshold | Accuracy | Precision | Recall | F1 Score |\n"
-    results += "|---|---|---|---|---|---|\n"
+    results += "| Target | PR-AUC | ROC-AUC | Brier | ECE | POD | FAR | CSI |\n"
+    results += "|---|---|---|---|---|---|---|---|\n"
     
     for i, name in enumerate(class_names):
         y_true = all_class_targets[:, i]
         y_probs = all_class_preds[:, i]
         
-        best_f1 = -1
-        best_thresh = 0.5
-        best_metrics = (0, 0, 0)
+        try:
+            pr_auc = average_precision_score(y_true, y_probs)
+            roc_auc = roc_auc_score(y_true, y_probs)
+        except ValueError:
+            pr_auc = float('nan')
+            roc_auc = float('nan')
+            
+        brier = brier_score_loss(y_true, y_probs)
+        
+        # ECE calculation
+        n_bins = 10
+        bin_boundaries = np.linspace(0, 1, n_bins + 1)
+        ece = 0.0
+        for j in range(n_bins):
+            bin_lower, bin_upper = bin_boundaries[j], bin_boundaries[j+1]
+            in_bin = (y_probs >= bin_lower) & (y_probs < bin_upper) if j < n_bins - 1 else (y_probs >= bin_lower) & (y_probs <= bin_upper)
+            prop_in_bin = in_bin.mean()
+            if prop_in_bin > 0:
+                acc_in_bin = y_true[in_bin].mean()
+                conf_in_bin = y_probs[in_bin].mean()
+                ece += np.abs(conf_in_bin - acc_in_bin) * prop_in_bin
+
+        best_csi = -1
+        best_pod = 0
+        best_far = 0
         
         for thresh in np.arange(0.01, 1.0, 0.01):
             y_pred = (y_probs >= thresh).astype(int)
-            f1 = f1_score(y_true, y_pred, zero_division=0)
-            if f1 > best_f1:
-                best_f1 = f1
-                best_thresh = thresh
-                best_metrics = (
-                    accuracy_score(y_true, y_pred),
-                    precision_score(y_true, y_pred, zero_division=0),
-                    recall_score(y_true, y_pred, zero_division=0)
-                )
+            # handle cases with only one class gracefully
+            if len(np.unique(y_true)) > 1:
+                tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+            else:
+                tp = np.sum((y_true == 1) & (y_pred == 1))
+                fp = np.sum((y_true == 0) & (y_pred == 1))
+                fn = np.sum((y_true == 1) & (y_pred == 0))
+                tn = np.sum((y_true == 0) & (y_pred == 0))
                 
-        acc, prec, rec = best_metrics
-        results += f"| {name} | {best_thresh:.2f} | {acc:.4f} | {prec:.4f} | {rec:.4f} | {best_f1:.4f} |\n"
+            pod = tp / (tp + fn) if (tp + fn) > 0 else 0
+            far = fp / (tp + fp) if (tp + fp) > 0 else 0
+            csi = tp / (tp + fn + fp) if (tp + fn + fp) > 0 else 0
+            
+            if csi > best_csi:
+                best_csi = csi
+                best_pod = pod
+                best_far = far
+                
+        results += f"| {name} | {pr_auc:.4f} | {roc_auc:.4f} | {brier:.5f} | {ece:.4f} | {best_pod:.3f} | {best_far:.3f} | {best_csi:.3f} |\n"
         
     results += "\n## Regression Metrics\n\n"
     results += "| Target | R2 Score | MAE | RMSE |\n"
