@@ -14,6 +14,8 @@ class FusionBlock(nn.Module):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(concat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(p=0.1),
             nn.Linear(hidden_dim, output_dim),
             nn.ReLU()
         )

@@ -15,7 +15,7 @@ class FloodModel(nn.Module):
         super().__init__()
         # In a real setup, config parsing would happen here. We use defaults.
         self.temporal_encoder = TemporalEncoder()
-        self.film_terrain = FiLMTerrain(input_dim=5)
+        self.film_terrain = FiLMTerrain(input_dim=9)  # 9 static terrain features per spec
         self.sar_cnn = SARCNN()
         self.fusion = FusionBlock()
         self.gnn = GraphGNN()

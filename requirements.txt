@@ -19,8 +19,11 @@ netcal>=1.3          # temperature scaling / ECE helpers (optional; hand-rolled 
 pyyaml>=6.0
 tqdm>=4.66
 
-# Imagery
-rasterio>=1.3        # if reading SAR chips as GeoTIFF; skip if chips are pre-converted to .npy
+# Imagery — SAR chip loading (PNG format via sar_flood_lite)
+Pillow>=10.0         # PNG decoding for SAR chips
+
+# Hyperparameter optimisation
+optuna>=3.5
 
 # Testing
 pytest>=7.4

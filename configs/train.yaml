@@ -4,4 +4,5 @@ weight_decay: 1e-5
 epochs: 50
 batch_size: 64
 patience: 10
+grad_clip_norm: 1.0
 seeds: [42, 43, 44, 45, 46]
