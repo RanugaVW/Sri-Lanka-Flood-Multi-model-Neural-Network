@@ -1,0 +1,52 @@
+node_id,name,basin,lat,lon,position,downstream_of,zone,elevation_m,snap_lat,snap_lon
+KEL_UP,Norwood (upper Kelani),Kelani,6.831,80.616,upstream,,wet,681.44,6.831,80.616
+KEL_KIT,Kitulgala,Kelani,6.989,80.412,upstream,KEL_UP,wet,681.44,6.989,80.412
+KEL_HAN,Hanwella,Kelani,6.902,80.082,mid,KEL_KIT,wet,123.66,6.902,80.082
+KEL_KAD,Kaduwela,Kelani,6.933,79.983,mid,KEL_HAN,wet,123.66,6.933,79.983
+KEL_COL,Colombo (Kelani mouth),Kelani,6.97,79.873,outlet,KEL_KAD,wet,123.66,6.97,79.873
+KAL_BAL,Balangoda (upper Kalu),Kalu,6.652,80.698,upstream,,wet,316.87,6.652,80.698
+KAL_RAT,Ratnapura,Kalu,6.683,80.4,mid,KAL_BAL,wet,316.87,6.683,80.4
+KAL_BUL,Bulathsinhala,Kalu,6.66,80.19,mid,KAL_RAT,wet,87.06,6.66,80.19
+KAL_KLT,Kalutara (Kalu mouth),Kalu,6.583,79.96,outlet,KAL_BUL,wet,87.06,6.583,79.96
+GIN_NEL,Neluwa (upper Gin),Gin,6.423,80.293,upstream,,wet,87.06,6.423,80.293
+GIN_BAD,Baddegama,Gin,6.171,80.19,mid,GIN_NEL,wet,26.06,6.171,80.19
+GIN_GAL,Galle (Gin mouth),Gin,6.089,80.221,outlet,GIN_BAD,wet,26.06,6.089,80.221
+NIL_PIT,Pitabeddara (upper Nilwala),Nilwala,6.3,80.552,upstream,,wet,316.87,6.3,80.552
+NIL_AKU,Akuressa,Nilwala,6.101,80.481,mid,NIL_PIT,wet,60.75,6.101,80.481
+NIL_MAT,Matara (Nilwala mouth),Nilwala,5.949,80.55,outlet,NIL_AKU,wet,60.75,5.949,80.55
+ATT_NIT,Nittambuwa (upper),AttanagaluOya,7.141,80.098,upstream,,wet,123.66,7.141,80.098
+ATT_GAM,Gampaha,AttanagaluOya,7.092,79.994,mid,ATT_NIT,wet,123.66,7.092,79.994
+ATT_JAE,Ja-Ela (mouth),AttanagaluOya,7.074,79.892,outlet,ATT_GAM,wet,123.66,7.074,79.892
+MHO_GIR,Giriulla (upper Maha Oya),MahaOya,7.331,80.121,upstream,,intermediate,70.83,7.331,80.121
+MHO_MOU,Maha Oya mouth (Kochchikade),MahaOya,7.301,79.833,outlet,MHO_GIR,wet,70.83,7.301,79.833
+DED_KUR,Kurunegala (upper Deduru),DeduruOya,7.487,80.362,upstream,,intermediate,296.6,7.487,80.362
+DED_CHI,Chilaw (Deduru mouth),DeduruOya,7.576,79.797,outlet,DED_KUR,intermediate,70.83,7.576,79.797
+MAH_NUW,Nuwara Eliya (upper Mahaweli),Mahaweli,6.949,80.782,upstream,,wet,681.44,6.949,80.782
+MAH_PER,Peradeniya / Kandy,Mahaweli,7.271,80.598,mid,MAH_NUW,wet,296.6,7.271,80.598
+MAH_MHY,Mahiyanganaya,Mahaweli,7.331,81.001,mid,MAH_PER,intermediate,179.65,7.331,81.001
+MAH_MAN,Manampitiya (Polonnaruwa),Mahaweli,7.921,81.101,downstream,MAH_MHY,dry,51.07,7.921,81.101
+GAL_ING,Inginiyagala (Gal Oya reservoir),GalOya,7.2,81.5,upstream,,dry,399.54,7.2,81.5
+GAL_AMP,Ampara,GalOya,7.291,81.671,mid,GAL_ING,dry,16.12,7.291,81.671
+BAT_VAL,Valachchenai,Batticaloa,7.921,81.531,mid,,dry,51.07,7.921,81.531
+BAT_BAT,Batticaloa (lagoon),Batticaloa,7.717,81.7,outlet,BAT_VAL,dry,16.12,7.717,81.7
+WAL_EMB,Embilipitiya (upper Walawe),Walawe,6.343,80.851,upstream,,intermediate,316.87,6.343,80.851
+WAL_AMB,Ambalantota (Walawe mouth),Walawe,6.121,81.021,outlet,WAL_EMB,dry,26.65,6.121,81.021
+KIR_TIS,Tissamaharama,KirindiOya,6.281,81.281,outlet,,dry,168.92,6.281,81.281
+MAL_ANU,Anuradhapura (upper Malwathu),MalwathuOya,8.351,80.401,upstream,,dry,84.84,8.351,80.401
+MAL_MAN,Mannar (Malwathu mouth),MalwathuOya,8.951,79.951,outlet,MAL_ANU,dry,24.02,8.951,79.951
+YAN_HOR,Horowpothana (Yan Oya),YanOya,8.551,80.881,mid,,dry,84.84,8.551,80.881
+KLA_ELA,Eluwankulama (Kala Oya),KalaOya,8.151,79.851,outlet,,dry,55.43,8.151,79.851
+KEL_AVI,Avissawella,Kelani,6.954,80.211,mid,KEL_HAN,wet,123.66,6.954,80.211
+KAL_AGA,Agalawatta,Kalu,6.535,80.15,mid,KAL_BUL,wet,87.06,6.535,80.15
+GIN_THA,Thawalama,Gin,6.331,80.331,upstream,GIN_NEL,wet,316.87,6.331,80.331
+NIL_URA,Urubokka,Nilwala,6.231,80.601,upstream,NIL_PIT,wet,60.75,6.231,80.601
+MAH_VIC,Victoria reservoir (Teldeniya),Mahaweli,7.241,80.781,mid,MAH_PER,wet,681.44,7.241,80.781
+MAH_POL,Polonnaruwa town,Mahaweli,7.94,81.001,downstream,MAH_MHY,dry,51.07,7.94,81.001
+WAL_UDA,Udawalawe reservoir,Walawe,6.441,80.881,upstream,WAL_EMB,intermediate,316.87,6.441,80.881
+ATT_VEY,Veyangoda,AttanagaluOya,7.155,80.061,upstream,ATT_NIT,wet,123.66,7.155,80.061
+DED_WAR,Wariyapola,DeduruOya,7.621,80.231,upstream,DED_KUR,intermediate,70.83,7.621,80.231
+COL_KOT,Kotte (Diyawanna low-lying),ColomboMetro,6.888,79.901,outlet,,wet,123.66,6.888,79.901
+COL_KOL,Kolonnawa,ColomboMetro,6.933,79.891,outlet,COL_KOT,wet,123.66,6.933,79.891
+KEL_RUW,Ruwanwella,Kelani,7.041,80.251,mid,KEL_KIT,wet,123.66,7.041,80.251
+MAH_KAN,Kandy city (Mahaweli mid),Mahaweli,7.291,80.635,mid,MAH_PER,wet,296.6,7.291,80.635
+BAT_ERA,Eravur,Batticaloa,7.771,81.601,mid,BAT_VAL,dry,2.85,7.771,81.601

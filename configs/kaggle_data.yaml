@@ -13,7 +13,9 @@ data_paths:
   # Kaggle URL: https://www.kaggle.com/datasets/uom230429e/flood-data-set
   # Mounts at: /kaggle/input/flood-data-set/
   # Structure inside: sar_chips/sar_flood_lite/frames/<SITE_ID>/<YYYY-MM-DD>.png
-  sar_chips: /kaggle/input/flood-data-set/sar_chips/sar_flood_lite
+  sar_chips:   # Update this line to match the tabular path structure:
+  sar_chips: /kaggle/input/datasets/uom230429e/flood-data-set/sar_chips/sar_flood_lite
+
 
 splits:
   temporal:

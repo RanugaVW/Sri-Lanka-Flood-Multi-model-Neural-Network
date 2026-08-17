@@ -1,0 +1,359 @@
+{
+  "KEL_UP": {
+    "moderate": 12.155999999999995,
+    "high": 20.88,
+    "severe": 27.48269999999998,
+    "annmax_median": 25.36,
+    "q_mean_train": 6.384106588793575
+  },
+  "KEL_KIT": {
+    "moderate": 38.64799999999998,
+    "high": 63.03599999999994,
+    "severe": 79.32159999999982,
+    "annmax_median": 73.13,
+    "q_mean_train": 20.625499178682244
+  },
+  "KEL_HAN": {
+    "moderate": 14.56,
+    "high": 21.77199999999998,
+    "severe": 29.38269999999998,
+    "annmax_median": 24.35,
+    "q_mean_train": 8.165924438766197
+  },
+  "KEL_KAD": {
+    "moderate": 288.73,
+    "high": 505.84959999999904,
+    "severe": 668.88,
+    "annmax_median": 509.5,
+    "q_mean_train": 163.74224858550832
+  },
+  "KEL_COL": {
+    "moderate": 4.78,
+    "high": 8.62,
+    "severe": 12.855899999999938,
+    "annmax_median": 15.07,
+    "q_mean_train": 2.2165030114984487
+  },
+  "KAL_BAL": {
+    "moderate": 23.21,
+    "high": 39.09,
+    "severe": 53.732499999999916,
+    "annmax_median": 49.23,
+    "q_mean_train": 11.107050556670927
+  },
+  "KAL_RAT": {
+    "moderate": 98.54,
+    "high": 157.49,
+    "severe": 202.54799999999906,
+    "annmax_median": 196.24,
+    "q_mean_train": 47.8935736448257
+  },
+  "KAL_BUL": {
+    "moderate": 4.08,
+    "high": 6.698799999999992,
+    "severe": 9.77489999999997,
+    "annmax_median": 8.46,
+    "q_mean_train": 2.373460485490053
+  },
+  "KAL_KLT": {
+    "moderate": 398.20399999999984,
+    "high": 632.0523999999994,
+    "severe": 852.6552999999955,
+    "annmax_median": 740.31,
+    "q_mean_train": 213.6279029019894
+  },
+  "GIN_NEL": {
+    "moderate": 3.83,
+    "high": 6.143199999999988,
+    "severe": 8.11319999999996,
+    "annmax_median": 7.04,
+    "q_mean_train": 2.1007884650483666
+  },
+  "GIN_BAD": {
+    "moderate": 71.78,
+    "high": 116.76,
+    "severe": 160.66569999999987,
+    "annmax_median": 131.13,
+    "q_mean_train": 39.20753239642271
+  },
+  "GIN_GAL": {
+    "moderate": 2.18,
+    "high": 3.43,
+    "severe": 4.466099999999996,
+    "annmax_median": 4.37,
+    "q_mean_train": 1.1151870779339297
+  },
+  "NIL_PIT": {
+    "moderate": 4.47,
+    "high": 8.738799999999992,
+    "severe": 13.635399999999954,
+    "annmax_median": 11.08,
+    "q_mean_train": 1.918003285271035
+  },
+  "NIL_AKU": {
+    "moderate": 2.28,
+    "high": 3.8,
+    "severe": 5.092199999999993,
+    "annmax_median": 4.28,
+    "q_mean_train": 1.1463241467421061
+  },
+  "NIL_MAT": {
+    "moderate": 0.71,
+    "high": 1.42,
+    "severe": 2.0960999999999967,
+    "annmax_median": 2.43,
+    "q_mean_train": 0.32121737543347323
+  },
+  "ATT_NIT": {
+    "moderate": 15.415999999999995,
+    "high": 28.200799999999973,
+    "severe": 42.96109999999983,
+    "annmax_median": 35.56,
+    "q_mean_train": 8.131666362474903
+  },
+  "ATT_GAM": {
+    "moderate": 10.04,
+    "high": 16.70799999999992,
+    "severe": 24.74979999999994,
+    "annmax_median": 19.09,
+    "q_mean_train": 5.313345501003833
+  },
+  "ATT_JAE": {
+    "moderate": 3.081999999999998,
+    "high": 5.478799999999992,
+    "severe": 8.140999999999966,
+    "annmax_median": 7.22,
+    "q_mean_train": 1.603131958386567
+  },
+  "MHO_GIR": {
+    "moderate": 16.5,
+    "high": 37.35919999999993,
+    "severe": 57.77469999999991,
+    "annmax_median": 45.67,
+    "q_mean_train": 7.905796678225954
+  },
+  "MHO_MOU": {
+    "moderate": 24.59,
+    "high": 45.17839999999996,
+    "severe": 74.80049999999964,
+    "annmax_median": 50.76,
+    "q_mean_train": 12.507382734075563
+  },
+  "DED_KUR": {
+    "moderate": 10.463999999999997,
+    "high": 30.936799999999913,
+    "severe": 50.82269999999965,
+    "annmax_median": 46.42,
+    "q_mean_train": 4.45753057127213
+  },
+  "DED_CHI": {
+    "moderate": 1.96,
+    "high": 4.0,
+    "severe": 6.0975999999999475,
+    "annmax_median": 4.93,
+    "q_mean_train": 0.9323069903267021
+  },
+  "MAH_NUW": {
+    "moderate": 2.73,
+    "high": 4.758799999999992,
+    "severe": 6.74,
+    "annmax_median": 5.43,
+    "q_mean_train": 1.4078572732250412
+  },
+  "MAH_PER": {
+    "moderate": 130.27999999999994,
+    "high": 235.05,
+    "severe": 322.7588999999995,
+    "annmax_median": 303.09,
+    "q_mean_train": 61.90340390582223
+  },
+  "MAH_MHY": {
+    "moderate": 1.03,
+    "high": 3.654399999999996,
+    "severe": 7.85,
+    "annmax_median": 4.04,
+    "q_mean_train": 0.4967457565249133
+  },
+  "MAH_MAN": {
+    "moderate": 1.08,
+    "high": 3.56,
+    "severe": 7.91,
+    "annmax_median": 3.71,
+    "q_mean_train": 0.4450793940500091
+  },
+  "GAL_ING": {
+    "moderate": 6.96,
+    "high": 15.847599999999984,
+    "severe": 26.96659999999998,
+    "annmax_median": 14.1,
+    "q_mean_train": 2.9250702682971346
+  },
+  "GAL_AMP": {
+    "moderate": 77.73799999999997,
+    "high": 217.1543999999992,
+    "severe": 363.42629999999974,
+    "annmax_median": 170.0,
+    "q_mean_train": 35.30718926811461
+  },
+  "BAT_VAL": {
+    "moderate": 0.6419999999999982,
+    "high": 1.814399999999996,
+    "severe": 3.567099999999964,
+    "annmax_median": 2.78,
+    "q_mean_train": 0.24388027012228508
+  },
+  "BAT_BAT": {
+    "moderate": 41.76,
+    "high": 126.47759999999988,
+    "severe": 246.81089999999813,
+    "annmax_median": 152.46,
+    "q_mean_train": 13.88104581127943
+  },
+  "WAL_EMB": {
+    "moderate": 165.03599999999994,
+    "high": 351.63359999999903,
+    "severe": 526.23,
+    "annmax_median": 396.19,
+    "q_mean_train": 65.6788355539332
+  },
+  "WAL_AMB": {
+    "moderate": 0.99,
+    "high": 2.27,
+    "severe": 4.226599999999981,
+    "annmax_median": 5.27,
+    "q_mean_train": 0.371436393502464
+  },
+  "KIR_TIS": {
+    "moderate": 1.78,
+    "high": 5.353199999999988,
+    "severe": 9.535399999999953,
+    "annmax_median": 9.35,
+    "q_mean_train": 0.6023891221025734
+  },
+  "MAL_ANU": {
+    "moderate": 0.34,
+    "high": 1.8843999999999959,
+    "severe": 4.168299999999991,
+    "annmax_median": 3.84,
+    "q_mean_train": 0.19990691732067895
+  },
+  "MAL_MAN": {
+    "moderate": 0.89,
+    "high": 2.71,
+    "severe": 4.426099999999996,
+    "annmax_median": 3.36,
+    "q_mean_train": 0.41615623288921333
+  },
+  "YAN_HOR": {
+    "moderate": 5.5,
+    "high": 15.93599999999994,
+    "severe": 40.67079999999991,
+    "annmax_median": 16.22,
+    "q_mean_train": 2.471786822412849
+  },
+  "KLA_ELA": {
+    "moderate": 0.28,
+    "high": 1.484399999999996,
+    "severe": 2.716099999999997,
+    "annmax_median": 2.12,
+    "q_mean_train": 0.13940317576200037
+  },
+  "KEL_AVI": {
+    "moderate": 61.39999999999997,
+    "high": 100.4911999999999,
+    "severe": 125.77,
+    "annmax_median": 110.69,
+    "q_mean_train": 35.108474174119365
+  },
+  "KAL_AGA": {
+    "moderate": 3.29,
+    "high": 5.44,
+    "severe": 8.612499999999919,
+    "annmax_median": 6.29,
+    "q_mean_train": 1.8690892498631138
+  },
+  "GIN_THA": {
+    "moderate": 3.5,
+    "high": 5.658799999999992,
+    "severe": 7.74659999999998,
+    "annmax_median": 6.21,
+    "q_mean_train": 1.965716371600657
+  },
+  "NIL_URA": {
+    "moderate": 2.0519999999999983,
+    "high": 4.01199999999998,
+    "severe": 5.7982999999999905,
+    "annmax_median": 5.24,
+    "q_mean_train": 0.9349881365212629
+  },
+  "MAH_VIC": {
+    "moderate": 147.59,
+    "high": 310.48679999999973,
+    "severe": 460.21279999999723,
+    "annmax_median": 349.75,
+    "q_mean_train": 61.81196568716919
+  },
+  "MAH_POL": {
+    "moderate": 1.78,
+    "high": 6.46,
+    "severe": 14.596699999999846,
+    "annmax_median": 8.55,
+    "q_mean_train": 0.8469538236904545
+  },
+  "WAL_UDA": {
+    "moderate": 2.34,
+    "high": 6.567599999999984,
+    "severe": 11.850299999999924,
+    "annmax_median": 11.59,
+    "q_mean_train": 0.8350209892316116
+  },
+  "ATT_VEY": {
+    "moderate": 5.21,
+    "high": 9.96,
+    "severe": 16.72639999999992,
+    "annmax_median": 14.81,
+    "q_mean_train": 2.5988081766745754
+  },
+  "DED_WAR": {
+    "moderate": 10.59999999999999,
+    "high": 31.15679999999991,
+    "severe": 49.82,
+    "annmax_median": 46.64,
+    "q_mean_train": 4.47836466508487
+  },
+  "COL_KOT": {
+    "moderate": 5.005999999999995,
+    "high": 8.95199999999998,
+    "severe": 13.720799999999908,
+    "annmax_median": 14.17,
+    "q_mean_train": 2.38576930096733
+  },
+  "COL_KOL": {
+    "moderate": 304.6319999999999,
+    "high": 532.33,
+    "severe": 710.21,
+    "annmax_median": 553.63,
+    "q_mean_train": 174.39745026464684
+  },
+  "KEL_RUW": {
+    "moderate": 121.18,
+    "high": 201.97679999999983,
+    "severe": 254.62989999999982,
+    "annmax_median": 220.82,
+    "q_mean_train": 63.54215732797957
+  },
+  "MAH_KAN": {
+    "moderate": 142.88,
+    "high": 273.16,
+    "severe": 379.7267999999997,
+    "annmax_median": 361.24,
+    "q_mean_train": 67.22392589888666
+  },
+  "BAT_ERA": {
+    "moderate": 42.26999999999998,
+    "high": 126.77199999999988,
+    "severe": 250.2596999999981,
+    "annmax_median": 153.88,
+    "q_mean_train": 14.044376711078664
+  }
+}
