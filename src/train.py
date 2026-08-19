@@ -1,45 +1,41 @@
 """
 train.py — Main training entry point for the Sri Lanka Flood Early-Warning Model.
 
-Epoch log format (matches STGCN-style output):
-    epoch X/Y | loss 0.XXXX (cls 0.XXXX reg 0.XXXX) | val pr_auc 0.XXXX (best 0.XXXX)
+Key design decisions (aligned with the companion MMF-Net ablation):
+  * Early stopping on val PR-AUC (flood_t+1) — not on total loss.
+    At a 2% positive rate, total loss can decrease while PR-AUC degrades.
+  * Temperature scaling fitted on validation logits, applied to test.
+  * Threshold chosen on validation, applied to test (no test-set leakage).
+  * Multi-seed deep ensemble: probabilities averaged before calibration.
+  * All intermediate results written to Drive-safe experiment_dir.
 
-Final summary table format:
-    Stage / Protocol   PR-AUC  ROC-AUC  Brier   ECE    POD    FAR    CSI
-    ─────────────────────────────────────────────────────────────────────────
-    temporal           0.XXXX  0.XXXX   0.XXXXX 0.XXXX 0.XXX  0.XXX  0.XXX
-
-Complete model checkpoint (saved per seed):
-    best_model.pth    — full checkpoint dict (weights + config + metadata)
-    best_model_full.pth — entire model object via torch.save(model)
-    scaler.pkl        — fitted StandardScaler (for inference on new data)
+Output files per seed
+---------------------
+  <experiment_dir>/seed_<k>/checkpoints/best_model.pth   — weights only
+  <experiment_dir>/scaler.pkl
+After all seeds:
+  <experiment_dir>/temperature.json   — calibrated temperature T
+  <experiment_dir>/threshold.json     — optimal val threshold
+  <experiment_dir>/evaluation_results.md   — paper-format table
 """
 
-import os
-import sys
-import json
-import time
-import pickle
-import random
-import argparse
+import os, sys, json, time, pickle, random, argparse
 
 import numpy as np
 import yaml
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from sklearn.metrics import (
-    average_precision_score, roc_auc_score, brier_score_loss, confusion_matrix
-)
+from sklearn.metrics import average_precision_score, roc_auc_score, brier_score_loss
 
 sys.path.insert(0, os.path.dirname(__file__))
-from data.dataset import FloodDataset
-from models.flood_model import FloodModel
+from data.dataset          import FloodDataset
+from models.flood_model    import FloodModel
 from losses.multitask_loss import MultiTaskLoss
-from eval.evaluate_metrics import evaluate_model
+from eval.evaluate_metrics import evaluate_model, compute_paper_metrics
 
+# ── Config helpers ─────────────────────────────────────────────────────────────
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
 def load_config(path):
     with open(path, 'r') as f:
         return yaml.safe_load(f)
@@ -52,42 +48,49 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark     = False
 
 
-def _run_batch(model, batch, device):
-    """Unpack one batch dict and run a forward pass. Returns (predictions, targets)."""
-    temporal_features   = batch['temporal_features'].to(device)
-    terrain_features    = batch['terrain_features'][0].to(device)
-    sar_chips           = batch['sar_chips'][0].to(device)
-    has_sar             = batch['has_sar'][0].to(device)
-    targets             = batch['targets'][0].to(device)
-    edge_index_flow     = batch['edge_index_flow'][0].to(device)
-    edge_index_spatial  = batch['edge_index_spatial'][0].to(device)
-    edge_weight_spatial = batch['edge_weight_spatial'][0].to(device)
+# ── Batch unpacking ────────────────────────────────────────────────────────────
 
-    preds = model(
-        temporal_features[0],   # one timestep → all 51 nodes
-        terrain_features,
-        sar_chips,
-        has_sar,
-        edge_index_flow,
-        edge_index_spatial,
-        edge_weight_spatial,
+def _unpack(batch, device):
+    """Unpack one DataLoader batch onto device.  Returns (inputs_dict, targets, mask, conf)."""
+    return (
+        {
+            'temporal':  batch['temporal_features'][0].to(device),
+            'terrain':   batch['terrain_features'][0].to(device),
+            'sar':       batch['sar_chips'][0].to(device),
+            'has_sar':   batch['has_sar'][0].to(device),
+            'ei_flow':   batch['edge_index_flow'][0].to(device),
+            'ei_sp':     batch['edge_index_spatial'][0].to(device),
+            'ew_sp':     batch['edge_weight_spatial'][0].to(device),
+        },
+        batch['targets'][0].to(device),
+        batch['valid_mask'][0].to(device),
+        batch['label_conf'][0].to(device),
     )
-    return preds, targets
 
 
-# ── Per-epoch train ────────────────────────────────────────────────────────────
-def train_one_epoch(model, loader, optimizer, criterion, device, grad_clip_norm=1.0):
+def _forward(model, inp):
+    return model(
+        inp['temporal'], inp['terrain'],
+        inp['sar'],      inp['has_sar'],
+        inp['ei_flow'],  inp['ei_sp'], inp['ew_sp'],
+    )
+
+
+# ── One epoch ─────────────────────────────────────────────────────────────────
+
+def train_one_epoch(model, loader, optimizer, criterion, device, grad_clip):
     model.train()
-    tot, tot_cls, tot_reg = 0.0, 0.0, 0.0
+    tot = tot_cls = tot_reg = 0.0
     for batch in loader:
+        inp, targets, mask, conf = _unpack(batch, device)
         optimizer.zero_grad()
-        preds, targets = _run_batch(model, batch, device)
-        lc = criterion(preds, targets)
+        out = _forward(model, inp)
+        lc  = criterion(out, targets, mask, conf)
         lc.total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
         tot     += lc.total.item()
         tot_cls += lc.cls.item()
@@ -96,164 +99,158 @@ def train_one_epoch(model, loader, optimizer, criterion, device, grad_clip_norm=
     return tot / n, tot_cls / n, tot_reg / n
 
 
-# ── Per-epoch validation (loss + quick PR-AUC on flood_t1) ────────────────────
+# ── Validation — collect logits + PR-AUC ──────────────────────────────────────
+
+@torch.no_grad()
 def validate(model, loader, criterion, device):
     model.eval()
+    all_logits, all_labels, all_events, all_days, all_nodes = [], [], [], [], []
     tot = 0.0
-    all_probs, all_labels = [], []
+    node_count = None
 
-    with torch.no_grad():
-        for batch in loader:
-            preds, targets = _run_batch(model, batch, device)
-            lc = criterion(preds, targets)
-            tot += lc.total.item()
-            # Collect flood_t+1 probabilities for quick PR-AUC (index 0)
-            all_probs.append(preds[:, 0].cpu().numpy())
-            all_labels.append(targets[:, 0].int().cpu().numpy())
+    for batch in loader:
+        inp, targets, mask, conf = _unpack(batch, device)
+        out = _forward(model, inp)
+        lc  = criterion(out, targets, mask, conf)
+        tot += lc.total.item()
+
+        # Primary head (flood_t+1 = index 0)
+        m   = mask.cpu().numpy() > 0
+        lg  = out['logits'][:, 0].cpu().numpy()
+        y   = targets[:, 0].int().cpu().numpy()
+        ev  = batch['event_ids'][0].numpy()
+        day = int(batch['day_idx'][0].numpy())
+        N   = len(m)
+        node_count = N
+
+        all_logits.append(lg[m])
+        all_labels.append(y[m])
+        all_events.append(ev[m])
+        all_days.append(np.full(m.sum(), day))
+        all_nodes.append(np.where(m)[0])
 
     n = max(len(loader), 1)
-    probs  = np.concatenate(all_probs)
+    logits = np.concatenate(all_logits)
     labels = np.concatenate(all_labels)
+    probs  = 1.0 / (1.0 + np.exp(-logits))
+
     try:
         pr_auc = average_precision_score(labels, probs)
     except ValueError:
         pr_auc = float('nan')
 
-    return tot / n, pr_auc
+    collected = {
+        'logit':  logits,
+        'y':      labels,
+        'event':  np.concatenate(all_events),
+        'day':    np.concatenate(all_days),
+        'node':   np.concatenate(all_nodes),
+    }
+    return tot / n, pr_auc, collected
 
 
-# ── Full metrics at a single optimal threshold ─────────────────────────────────
-def compute_threshold_metrics(y_true: np.ndarray, y_probs: np.ndarray):
-    """Returns (pr_auc, roc_auc, brier, ece, pod, far, csi, opt_thresh)."""
-    try:
-        pr_auc  = average_precision_score(y_true, y_probs)
-        roc_auc = roc_auc_score(y_true, y_probs)
-    except ValueError:
-        pr_auc = roc_auc = float('nan')
+# ── Temperature calibration ────────────────────────────────────────────────────
 
-    brier = brier_score_loss(y_true, y_probs)
+def fit_temperature(logits: np.ndarray, y: np.ndarray, max_iter: int = 200) -> float:
+    """Scalar temperature T minimising val NLL of sigmoid(logit / T)."""
+    lg  = torch.as_tensor(logits.astype(np.float32))
+    tgt = torch.as_tensor(y.astype(np.float32))
+    log_t = torch.zeros(1, requires_grad=True)
+    opt   = torch.optim.LBFGS([log_t], lr=0.1, max_iter=max_iter)
 
-    # ECE
-    n_bins = 10
-    boundaries = np.linspace(0, 1, n_bins + 1)
-    ece = 0.0
-    for j in range(n_bins):
-        lo, hi = boundaries[j], boundaries[j + 1]
-        mask = (y_probs >= lo) & (y_probs <= hi)
-        if mask.sum() > 0:
-            ece += np.abs(y_probs[mask].mean() - y_true[mask].mean()) * mask.mean()
+    def closure():
+        opt.zero_grad()
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            lg / log_t.exp(), tgt)
+        loss.backward()
+        return loss
 
-    # Sweep threshold for best CSI
-    best_csi, best_pod, best_far, best_thresh = -1, 0, 0, 0.5
-    for thr in np.arange(0.01, 1.0, 0.01):
-        y_pred = (y_probs >= thr).astype(int)
-        if len(np.unique(y_true)) > 1:
-            tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-        else:
-            tp = np.sum((y_true == 1) & (y_pred == 1))
-            fp = np.sum((y_true == 0) & (y_pred == 1))
-            fn = np.sum((y_true == 1) & (y_pred == 0))
-            tn = np.sum((y_true == 0) & (y_pred == 0))
-        pod = tp / (tp + fn) if (tp + fn) > 0 else 0
-        far = fp / (tp + fp) if (tp + fp) > 0 else 0
-        csi = tp / (tp + fn + fp) if (tp + fn + fp) > 0 else 0
-        if csi > best_csi:
-            best_csi, best_pod, best_far, best_thresh = csi, pod, far, thr
-
-    return pr_auc, roc_auc, brier, ece, best_pod, best_far, best_csi, best_thresh
+    opt.step(closure)
+    return float(log_t.exp().item())
 
 
-def collect_val_predictions(model, loader, device):
-    """Run model over val set and return (class_probs [N,4], class_targets [N,4])."""
-    all_probs, all_targets = [], []
+def apply_temperature(logits: np.ndarray, T: float) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-logits / max(T, 1e-3)))
+
+
+# ── Threshold search ───────────────────────────────────────────────────────────
+
+def best_threshold(y: np.ndarray, probs: np.ndarray, n: int = 200) -> float:
+    """Choose threshold maximising F1 on the validation set only."""
+    grid = np.quantile(probs, np.linspace(0.5, 0.9999, n))
+    best_thr, best_f1 = 0.5, -1.0
+    for t in np.unique(grid):
+        yhat = (probs >= t).astype(int)
+        tp = int(((yhat == 1) & (y == 1)).sum())
+        fp = int(((yhat == 1) & (y == 0)).sum())
+        fn = int(((yhat == 0) & (y == 1)).sum())
+        prec = tp / max(tp + fp, 1)
+        rec  = tp / max(tp + fn, 1)
+        f1   = 2 * prec * rec / max(prec + rec, 1e-12)
+        if f1 > best_f1:
+            best_f1, best_thr = f1, float(t)
+    return best_thr
+
+
+# ── Test-set logit collection ──────────────────────────────────────────────────
+
+@torch.no_grad()
+def collect_all_heads(model, loader, device):
+    """Collect logits and targets for all 4 cls heads + 2 reg heads on test/val."""
     model.eval()
-    with torch.no_grad():
-        for batch in loader:
-            preds, targets = _run_batch(model, batch, device)
-            all_probs.append(preds[:, :4].cpu().numpy())
-            all_targets.append(targets[:, :4].int().cpu().numpy())
-    return np.concatenate(all_probs), np.concatenate(all_targets)
+    cls_logits, cls_targets = [], []
+    reg_preds,  reg_targets = [], []
+    events, days, nodes     = [], [], []
+    masks                   = []
+
+    for batch in loader:
+        inp, targets, mask, _ = _unpack(batch, device)
+        out = _forward(model, inp)
+        m   = mask.cpu().numpy() > 0
+
+        cls_logits.append(out['logits'].cpu().numpy()[m])
+        cls_targets.append(targets[:, :4].int().cpu().numpy()[m])
+        reg_preds.append(out['reg'].cpu().numpy()[m])
+        reg_targets.append(targets[:, 4:].cpu().numpy()[m])
+
+        ev  = batch['event_ids'][0].numpy()
+        day = int(batch['day_idx'][0].numpy())
+        events.append(ev[m])
+        days.append(np.full(m.sum(), day))
+        nodes.append(np.where(m)[0])
+
+    return {
+        'cls_logits':  np.concatenate(cls_logits),
+        'cls_targets': np.concatenate(cls_targets),
+        'reg_preds':   np.concatenate(reg_preds),
+        'reg_targets': np.concatenate(reg_targets),
+        'event':       np.concatenate(events),
+        'day':         np.concatenate(days),
+        'node':        np.concatenate(nodes),
+    }
 
 
-# ── Pretty print helpers ───────────────────────────────────────────────────────
-SEP  = "=" * 80
-DASH = "-" * 80
-HDR  = f"{'Stage / Protocol':<22} {'PR-AUC':>7} {'ROC-AUC':>8} {'Brier':>8} {'ECE':>7} {'POD':>6} {'FAR':>6} {'CSI':>6}"
-ROW_FMT = "{stage:<22} {pr:>7.4f} {roc:>8.4f} {brier:>8.5f} {ece:>7.4f} {pod:>6.3f} {far:>6.3f} {csi:>6.3f}"
+# ── Checkpoint save ────────────────────────────────────────────────────────────
 
-
-def print_summary_table(rows: list[dict]):
-    print(f"\n{SEP}")
-    print(f"{'FLOOD DNN — EVALUATION SUMMARY':^80}")
-    print(SEP)
-    print(HDR)
-    print(DASH)
-    for r in rows:
-        print(ROW_FMT.format(**r))
-    print(SEP)
-
-
-# ── Complete model save ────────────────────────────────────────────────────────
-def save_complete_checkpoint(
-    model, optimizer, scheduler, epoch, best_val_loss, val_metrics,
-    model_cfg, train_cfg, scaler, checkpoint_dir, seed
-):
-    """
-    Saves everything needed to resume training or run inference:
-      best_model.pth      — full checkpoint dict (weights + configs + metrics)
-      best_model_full.pth — entire torch model object (for quick loading)
-      scaler.pkl          — fitted StandardScaler
-      training_summary.json — human-readable training metadata
-    """
+def save_checkpoint(model, checkpoint_dir, seed):
     os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # 1. Full checkpoint dict
-    ckpt = {
-        'epoch':          epoch,
-        'seed':           seed,
-        'model_state':    model.state_dict(),
-        'optimizer_state':optimizer.state_dict(),
-        'scheduler_state':scheduler.state_dict(),
-        'best_val_loss':  best_val_loss,
-        'val_metrics':    val_metrics,
-        'model_cfg':      model_cfg,
-        'train_cfg':      train_cfg,
-    }
-    torch.save(ckpt, os.path.join(checkpoint_dir, 'best_model.pth'))
-
-    # 2. Full model object (easy inference — just torch.load and call model(x))
-    torch.save(model, os.path.join(checkpoint_dir, 'best_model_full.pth'))
-
-    # 3. Scaler
-    with open(os.path.join(checkpoint_dir, 'scaler.pkl'), 'wb') as f:
-        pickle.dump(scaler, f)
-
-    # 4. Human-readable JSON summary
-    summary = {
-        'seed':         seed,
-        'best_epoch':   epoch + 1,
-        'best_val_loss':float(best_val_loss),
-        'val_metrics':  {k: float(v) for k, v in (val_metrics or {}).items()},
-        'model_cfg':    model_cfg,
-        'train_cfg':    {k: str(v) for k, v in train_cfg.items()},
-    }
-    with open(os.path.join(checkpoint_dir, 'training_summary.json'), 'w') as f:
-        json.dump(summary, f, indent=2)
-
-    print(f"  [Checkpoint] Saved to {checkpoint_dir}/")
+    torch.save(model.state_dict(),
+               os.path.join(checkpoint_dir, 'best_model.pth'))
 
 
-# ── Single-seed training run ───────────────────────────────────────────────────
+# ── Single-seed training ───────────────────────────────────────────────────────
+
 def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir):
+    SEP  = '=' * 80
     print(f"\n{SEP}")
     print(f"{'  Training  seed=' + str(seed):^80}")
     print(SEP)
     set_seed(seed)
-    t_start = time.time()
 
-    # ── Datasets ───────────────────────────────────────────────────────────
     scaler_path = os.path.join(experiment_dir, 'scaler.pkl')
-    train_dataset = FloodDataset(
+
+    # ── Datasets ────────────────────────────────────────────────────────────
+    train_ds = FloodDataset(
         panel_path=data_cfg['data_paths']['panel'],
         nodes_path=data_cfg['data_paths']['nodes'],
         edges_path=data_cfg['data_paths']['edges_flow'],
@@ -262,128 +259,111 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
         scaler_save_path=scaler_path,
         sar_root=data_cfg['data_paths'].get('sar_chips'),
     )
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-
-    val_dataset = FloodDataset(
+    val_ds = FloodDataset(
         panel_path=data_cfg['data_paths']['panel'],
         nodes_path=data_cfg['data_paths']['nodes'],
         edges_path=data_cfg['data_paths']['edges_flow'],
         split_type='val',
-        scaler=train_dataset.scaler,
+        scaler=train_ds.scaler,
         sar_root=data_cfg['data_paths'].get('sar_chips'),
     )
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
-    print(f"  Train: {len(train_dataset)} samples | Val: {len(val_dataset)} samples")
+    test_ds = FloodDataset(
+        panel_path=data_cfg['data_paths']['panel'],
+        nodes_path=data_cfg['data_paths']['nodes'],
+        edges_path=data_cfg['data_paths']['edges_flow'],
+        split_type='test',
+        scaler=train_ds.scaler,
+        sar_root=data_cfg['data_paths'].get('sar_chips'),
+    )
 
-    # ── Model, Loss, Optimizer, Scheduler ─────────────────────────────────
+    # DataLoader batch_size=1: each "batch" is one full-graph snapshot
+    kw = dict(batch_size=1, num_workers=0, pin_memory=False)
+    train_loader = DataLoader(train_ds, shuffle=True,  **kw)
+    val_loader   = DataLoader(val_ds,   shuffle=False, **kw)
+    test_loader  = DataLoader(test_ds,  shuffle=False, **kw)
+
+    print(f"  Train {len(train_ds)} | Val {len(val_ds)} | Test {len(test_ds)} snapshots")
+
+    # ── Model & optimiser ───────────────────────────────────────────────────
     model = FloodModel(config=model_cfg).to(device)
+    print(f"  Parameters: {model.n_params():,}")
+
+    loss_cfg  = model_cfg.get('loss', {})
     criterion = MultiTaskLoss(
-        focal_gamma=model_cfg['loss']['focal_gamma'],
-        focal_alpha=model_cfg['loss'].get('focal_alpha', 0.25),
-        regression_weight=model_cfg['loss']['regression_weight'],
+        loss=train_cfg.get('loss', 'bce'),
+        focal_alpha=loss_cfg.get('focal_alpha', 0.75),
+        focal_gamma=loss_cfg.get('focal_gamma', 2.0),
+        regression_weight=loss_cfg.get('regression_weight', 0.2),
     )
-    lr = float(train_cfg['learning_rate'])
-    wd = float(train_cfg['weight_decay'])
-    optimizer = (optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-                 if train_cfg['optimizer'] == 'adamw'
-                 else optim.Adam(model.parameters(), lr=lr))
-    epochs    = train_cfg['epochs']
+
+    lr       = float(train_cfg['learning_rate'])
+    wd       = float(train_cfg.get('weight_decay', 1e-4))
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    epochs   = train_cfg['epochs']
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=epochs, eta_min=1e-6
-    )
-    patience       = train_cfg.get('patience', 10)
-    grad_clip_norm = float(train_cfg.get('grad_clip_norm', 1.0))
+        optimizer, T_max=epochs, eta_min=1e-6)
+    patience   = train_cfg.get('patience', 10)
+    grad_clip  = float(train_cfg.get('grad_clip_norm', 1.0))
 
-    seed_dir       = os.path.join(experiment_dir, f'seed_{seed}')
-    checkpoint_dir = os.path.join(seed_dir, 'checkpoints')
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    seed_dir   = os.path.join(experiment_dir, f'seed_{seed}')
+    ckpt_dir   = os.path.join(seed_dir, 'checkpoints')
+    os.makedirs(ckpt_dir, exist_ok=True)
 
-    # ── Training loop ──────────────────────────────────────────────────────
-    best_val_loss  = float('inf')
-    best_pr_auc    = 0.0
+    # ── Training loop ───────────────────────────────────────────────────────
+    best_pr_auc    = -1.0
     patience_count = 0
     best_epoch     = 0
+    t_start        = time.time()
 
-    print(f"\n  {'epoch':>7}  {'loss':>8}  {'cls':>8}  {'reg':>8}  {'val pr_auc':>10}  {'best':>8}")
+    print(f"\n  {'epoch':>7}  {'loss':>8}  {'cls':>8}  {'reg':>8}  {'val_pr_auc':>10}  {'best':>8}")
     print(f"  {'-'*7}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*10}  {'-'*8}")
 
     for epoch in range(epochs):
         tr_loss, tr_cls, tr_reg = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, grad_clip_norm
-        )
-        val_loss, val_pr_auc = validate(model, val_loader, criterion, device)
+            model, train_loader, optimizer, criterion, device, grad_clip)
+        val_loss, val_pr_auc, _ = validate(
+            model, val_loader, criterion, device)
         scheduler.step()
 
-        # Match screenshot format exactly:
-        # epoch 13/60 | loss 0.0164 (cls 0.0056 reg 0.0537) | val pr_auc 0.5648 (best 0.6002)
-        is_best = val_loss < best_val_loss
-        if is_best:
-            best_pr_auc = val_pr_auc
+        is_best = val_pr_auc > best_pr_auc
         print(
             f"  epoch {epoch+1:>2}/{epochs} | "
             f"loss {tr_loss:.4f} (cls {tr_cls:.4f} reg {tr_reg:.4f}) | "
-            f"val pr_auc {val_pr_auc:.4f} (best {best_pr_auc:.4f})"
+            f"val pr_auc {val_pr_auc:.4f} (best {max(best_pr_auc, val_pr_auc):.4f})"
         )
 
         if is_best:
-            best_val_loss  = val_loss
             best_pr_auc    = val_pr_auc
             best_epoch     = epoch
             patience_count = 0
-            # Save complete checkpoint every time we improve
-            save_complete_checkpoint(
-                model, optimizer, scheduler, epoch,
-                best_val_loss, {'pr_auc': val_pr_auc},
-                model_cfg, train_cfg, train_dataset.scaler,
-                checkpoint_dir, seed
-            )
+            save_checkpoint(model, ckpt_dir, seed)
         else:
             patience_count += 1
             if patience_count >= patience:
-                print(f"  early stopping at epoch {epoch+1} (patience {patience})")
+                print(f"  Early stop at epoch {epoch+1} (best PR-AUC {best_pr_auc:.4f})")
                 break
 
     elapsed = time.time() - t_start
+    print(f"\n  Elapsed: {elapsed:.1f}s  |  Best epoch: {best_epoch+1}")
 
-    # ── Final evaluation on best checkpoint ───────────────────────────────
-    print(f"\n  Loading best checkpoint (epoch {best_epoch+1}) for final evaluation...")
-    ckpt = torch.load(
-        os.path.join(checkpoint_dir, 'best_model.pth'),
-        map_location=device, weights_only=False
-    )
-    model.load_state_dict(ckpt['model_state'])
+    # ── Load best checkpoint → collect val + test logits ────────────────────
+    model.load_state_dict(torch.load(
+        os.path.join(ckpt_dir, 'best_model.pth'),
+        map_location=device, weights_only=True))
     model.eval()
 
-    class_probs, class_targets = collect_val_predictions(model, val_loader, device)
+    _, _, val_collected  = validate(model, val_loader,  criterion, device)
+    test_all = collect_all_heads(model, test_loader, device)
 
-    # Compute full metrics for flood_t+1 (primary target)
-    y_true  = class_targets[:, 0]
-    y_probs = class_probs[:, 0]
-    pr, roc, brier, ece, pod, far, csi, opt_thr = compute_threshold_metrics(y_true, y_probs)
-
-    print(f"\n  Elapsed: {elapsed:.1f}s | Optimal Threshold: {opt_thr:.4f}")
-    print(f"  {'Model':<12} {'PR-AUC':>7} {'ROC-AUC':>8} {'Brier':>8} {'ECE':>7} {'POD':>6} {'FAR':>6} {'CSI':>6}")
-    print(f"  {'FloodDNN':<12} {pr:>7.4f} {roc:>8.4f} {brier:>8.5f} {ece:>7.4f} {pod:>6.3f} {far:>6.3f} {csi:>6.3f}")
-
-    # Update the checkpoint with full final metrics
-    val_metrics = dict(pr_auc=pr, roc_auc=roc, brier=brier, ece=ece, pod=pod, far=far, csi=csi)
-    save_complete_checkpoint(
-        model, optimizer, scheduler, best_epoch,
-        best_val_loss, val_metrics,
-        model_cfg, train_cfg, train_dataset.scaler,
-        checkpoint_dir, seed
-    )
-
-    return best_val_loss, val_metrics
+    return val_collected, test_all, best_pr_auc, model.n_params()
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+
 def main():
-    parser = argparse.ArgumentParser(description="Train Flood Early-Warning Model")
-    parser.add_argument('--experiment_dir', type=str,
-                        default='experiments/wp2_baselines')
-    parser.add_argument('--data_config', type=str,
-                        default='configs/data.yaml')
+    parser = argparse.ArgumentParser(description='Train Flood Early-Warning Model')
+    parser.add_argument('--experiment_dir', default='experiments/overhaul')
+    parser.add_argument('--data_config',    default='configs/data.yaml')
     args = parser.parse_args()
 
     data_cfg  = load_config(args.data_config)
@@ -391,60 +371,77 @@ def main():
     model_cfg = load_config('configs/model.yaml')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print(f"Device: {device}")
 
+    os.makedirs(args.experiment_dir, exist_ok=True)
     seeds = train_cfg.get('seeds', [42])
-    seed_results = {}   # seed → (best_val_loss, val_metrics)
+
+    # ── Train all seeds ──────────────────────────────────────────────────────
+    all_val_logits  = []
+    all_test_data   = []
+    val_ref = test_ref = None
+    n_params = 0
 
     for seed in seeds:
-        best_val_loss, val_metrics = run_single_seed(
-            seed=seed,
-            data_cfg=data_cfg,
-            train_cfg=train_cfg,
-            model_cfg=model_cfg,
-            device=device,
-            experiment_dir=args.experiment_dir,
-        )
-        seed_results[seed] = (best_val_loss, val_metrics)
+        val_col, test_all, _, np_ = run_single_seed(
+            seed, data_cfg, train_cfg, model_cfg, device, args.experiment_dir)
+        all_val_logits.append(val_col['logit'])
+        all_test_data.append(test_all)
+        val_ref  = val_col
+        test_ref = test_all
+        n_params = np_
 
-    # ── Summary table (one row per seed, matching screenshot format) ───────
-    rows = []
-    for seed, (loss, metrics) in seed_results.items():
-        rows.append(dict(
-            stage=f'seed_{seed}',
-            pr=metrics.get('pr_auc', 0),
-            roc=metrics.get('roc_auc', 0),
-            brier=metrics.get('brier', 0),
-            ece=metrics.get('ece', 0),
-            pod=metrics.get('pod', 0),
-            far=metrics.get('far', 0),
-            csi=metrics.get('csi', 0),
-        ))
+    # ── Ensemble: average probabilities across seeds ─────────────────────────
+    def ens_prob(logit_list):
+        return np.mean([1.0 / (1.0 + np.exp(-l)) for l in logit_list], axis=0)
 
-    # Aggregate row (mean across seeds)
-    if len(rows) > 1:
-        rows.append(dict(
-            stage='mean (all seeds)',
-            pr=np.mean([r['pr']    for r in rows]),
-            roc=np.mean([r['roc']  for r in rows]),
-            brier=np.mean([r['brier'] for r in rows]),
-            ece=np.mean([r['ece']  for r in rows]),
-            pod=np.mean([r['pod']  for r in rows]),
-            far=np.mean([r['far']  for r in rows]),
-            csi=np.mean([r['csi']  for r in rows]),
-        ))
+    val_prob_raw = ens_prob(all_val_logits)
 
-    print_summary_table(rows)
+    # For test: stack per-head logits and average
+    n_cls = all_test_data[0]['cls_logits'].shape[1]
+    test_cls_prob = np.mean(
+        [1.0 / (1.0 + np.exp(-d['cls_logits'])) for d in all_test_data], axis=0)
+    test_reg_pred = np.mean([d['reg_preds'] for d in all_test_data], axis=0)
 
-    # Point to the best seed checkpoint
-    best_seed = min(seed_results, key=lambda s: seed_results[s][0])
-    best_ckpt = os.path.join(
-        args.experiment_dir, f'seed_{best_seed}', 'checkpoints', 'best_model.pth'
+    # ── Temperature calibration on validation ────────────────────────────────
+    print("\n[calibration] Fitting temperature scaling on validation set...")
+    val_logits_ens = np.log(val_prob_raw.clip(1e-7, 1 - 1e-7) /
+                            (1 - val_prob_raw.clip(1e-7, 1 - 1e-7)))
+    T = fit_temperature(val_logits_ens, val_ref['y'])
+    print(f"  Temperature T = {T:.4f}")
+
+    # Calibrated probabilities
+    val_prob_cal  = apply_temperature(val_logits_ens, T)
+    test_cls_logits_ens = np.log(test_cls_prob.clip(1e-7, 1-1e-7) /
+                                  (1-test_cls_prob.clip(1e-7, 1-1e-7)))
+    test_cls_prob_cal = 1.0 / (1.0 + np.exp(-test_cls_logits_ens / max(T, 1e-3)))
+
+    # ── Threshold from validation ────────────────────────────────────────────
+    thr = best_threshold(val_ref['y'], val_prob_cal)
+    print(f"[threshold]   Optimal F1 threshold (val) = {thr:.4f}")
+
+    # ── Save calibration artefacts ───────────────────────────────────────────
+    with open(os.path.join(args.experiment_dir, 'temperature.json'), 'w') as f:
+        json.dump({'temperature': T}, f, indent=2)
+    with open(os.path.join(args.experiment_dir, 'threshold.json'), 'w') as f:
+        json.dump({'threshold': thr, 'n_seeds': len(seeds)}, f, indent=2)
+
+    # ── Final evaluation on test set ─────────────────────────────────────────
+    out_path = os.path.join(args.experiment_dir, 'evaluation_results.md')
+    compute_paper_metrics(
+        cls_probs=test_cls_prob_cal,
+        cls_targets=test_ref['cls_targets'],
+        reg_preds=test_reg_pred,
+        reg_targets=test_ref['reg_targets'],
+        event=test_ref['event'],
+        day=test_ref['day'],
+        node=test_ref['node'],
+        threshold=thr,
+        n_params=n_params,
+        n_seeds=len(seeds),
+        output_file=out_path,
     )
-    print(f"\n  Best seed: {best_seed}")
-    print(f"  Checkpoint : {best_ckpt}")
-    print(f"  Full model : {best_ckpt.replace('best_model.pth','best_model_full.pth')}")
-    print(f"  Scaler     : {best_ckpt.replace('best_model.pth','scaler.pkl')}")
+    print(f"\n[done] Results written to {out_path}")
 
 
 if __name__ == '__main__':

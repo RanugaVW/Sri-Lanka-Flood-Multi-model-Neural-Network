@@ -1,35 +1,50 @@
 import torch
 import torch.nn as nn
 
+
 class OutputHeads(nn.Module):
+    """Decoupled classification and regression output heads.
+
+    Returns raw LOGITS for the four classification heads and raw continuous
+    values for the two regression heads.  Sigmoid is deliberately NOT applied
+    here for two reasons:
+
+      1. Numerical stability: BCEWithLogitsLoss (used in the loss module) fuses
+         sigmoid + BCE into a single numerically stable operation.
+      2. Calibration: temperature scaling is applied to logits after training,
+         before sigmoid is ever called.  Applying sigmoid inside the model would
+         prevent the calibrator from working correctly.
+
+    Callers that need probabilities (evaluation, inference) should do:
+        probs = torch.sigmoid(out["logits"] / temperature)
     """
-    Output Heads.
-    - Decoupled MLPs for Classification (4 outputs) and Regression (2 outputs).
-    - Prevents negative transfer between probabilities and continuous levels.
-    """
-    def __init__(self, in_features=128, hidden_features=64, dropout=0.1):
+
+    def __init__(self, in_features: int = 128, hidden_features: int = 64,
+                 dropout: float = 0.1):
         super().__init__()
         self.cls_head = nn.Sequential(
             nn.Linear(in_features, hidden_features),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(p=dropout),
-            nn.Linear(hidden_features, 4)
+            nn.Linear(hidden_features, 4),   # 4 classification logits
         )
         self.reg_head = nn.Sequential(
             nn.Linear(in_features, hidden_features),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(p=dropout),
-            nn.Linear(hidden_features, 2)
+            nn.Linear(hidden_features, 2),   # 2 regression outputs (raw)
         )
-        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, node_embeddings):
-        # node_embeddings: [num_nodes, 128]
-        cls_logits = self.cls_head(node_embeddings)  # [num_nodes, 4]
-        reg_preds  = self.reg_head(node_embeddings)  # [num_nodes, 2]
-
-        # Apply sigmoid to classification outputs (probabilities / binary onset)
-        probs = self.sigmoid(cls_logits)
-
-        # Concatenate for backwards compatibility with MultiTaskLoss indexing
-        return torch.cat([probs, reg_preds], dim=1)
+    def forward(self, node_embeddings: torch.Tensor) -> dict:
+        """
+        node_embeddings : [N, in_features]
+        Returns
+        -------
+        dict with keys
+          "logits" : [N, 4]  — raw classification logits (NO sigmoid)
+          "reg"    : [N, 2]  — raw regression outputs
+        """
+        return {
+            "logits": self.cls_head(node_embeddings),
+            "reg":    self.reg_head(node_embeddings),
+        }

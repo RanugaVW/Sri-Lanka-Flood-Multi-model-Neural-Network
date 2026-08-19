@@ -35,9 +35,6 @@ heads:
   outputs: [flood_t1, flood_t2, flood_t3, onset, discharge_t1, zscore_3d_max]
 
 loss:
-  flood_loss: focal_bce
-  focal_gamma: 4.0
-  focal_alpha: 0.85
-  use_label_confidence_weighting: true
-  regression_loss: huber
-  regression_weight: 0.2
+  focal_alpha: 0.75          # up-weights minority flood class (~2% positive rate)
+  focal_gamma: 2.0           # standard focal exponent
+  regression_weight: 0.2     # weight for Huber regression terms
