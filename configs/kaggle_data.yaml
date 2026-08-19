@@ -2,17 +2,15 @@ data_paths:
   # ── Tabular + Graph dataset ───────────────────────────────────────────────
   # Dataset: "Sri Lanka Flood Tabular Graph 2003-2025"
   # Kaggle URL: https://www.kaggle.com/datasets/uom230429e/sri-lanka-flood-tabular-graph-2003-2025
-  # Add via: Notebook → Add Input → search "uom230429e/sri-lanka-flood-tabular-graph-2003-2025"
-  # Mounts at: /kaggle/input/sri-lanka-flood-tabular-graph-2003-2025/
-  panel:         /kaggle/input/sri-lanka-flood-tabular-graph-2003-2025/flood_dataset.parquet
-  nodes:         /kaggle/input/sri-lanka-flood-tabular-graph-2003-2025/nodes.csv
-  edges_flow:    /kaggle/input/sri-lanka-flood-tabular-graph-2003-2025/edges.csv
-  edges_spatial: /kaggle/input/sri-lanka-flood-tabular-graph-2003-2025/edges.csv
+  # Mounts at: /kaggle/input/datasets/uom230429e/sri-lanka-flood-tabular-graph-2003-2025/
+  panel:         /kaggle/input/datasets/uom230429e/sri-lanka-flood-tabular-graph-2003-2025/flood_dataset.parquet
+  nodes:         /kaggle/input/datasets/uom230429e/sri-lanka-flood-tabular-graph-2003-2025/nodes.csv
+  edges_flow:    /kaggle/input/datasets/uom230429e/sri-lanka-flood-tabular-graph-2003-2025/edges.csv
+  edges_spatial: /kaggle/input/datasets/uom230429e/sri-lanka-flood-tabular-graph-2003-2025/edges.csv
 
   # ── SAR image dataset ─────────────────────────────────────────────────────
   # Dataset: "Sri Lanka Flood Sentinel-1 SAR 2015-2025"
   # Kaggle URL: https://www.kaggle.com/datasets/uom230429e/flood-data-set
-  # Add via: Notebook → Add Input → search "uom230429e/flood-data-set"
-  # Mounts at: /kaggle/input/flood-data-set/
+  # Mounts at: /kaggle/input/datasets/uom230429e/flood-data-set/
   # Structure inside: sar_flood_ds/frames/<SITE_ID>/<YYYY-MM-DD>.png
-  sar_chips: /kaggle/input/flood-data-set/sar_flood_ds
+  sar_chips: /kaggle/input/datasets/uom230429e/flood-data-set/sar_flood_ds
