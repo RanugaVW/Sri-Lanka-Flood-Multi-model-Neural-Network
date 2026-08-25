@@ -5,5 +5,5 @@ epochs: 60
 patience: 10
 grad_clip_norm: 1.0
 loss: bce          # bce | focal | focal_conf  (BCE is best on this dataset)
-seeds: [42, 43, 44, 45, 46]
+seeds: [42]
 calibration: temperature
