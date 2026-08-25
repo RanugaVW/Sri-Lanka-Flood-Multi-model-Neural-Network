@@ -240,7 +240,7 @@ def save_checkpoint(model, checkpoint_dir, seed):
 
 # ── Single-seed training ───────────────────────────────────────────────────────
 
-def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir):
+def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir, global_start_time=None, max_time_secs=None):
     SEP  = '=' * 80
     print(f"\n{SEP}")
     print(f"{'  Training  seed=' + str(seed):^80}")
@@ -314,11 +314,24 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
     patience_count = 0
     best_epoch     = 0
     t_start        = time.time()
+    start_epoch    = 0
+
+    checkpoint_path = os.path.join(ckpt_dir, 'last_checkpoint.pth')
+    if os.path.exists(checkpoint_path):
+        print(f"  [resuming] Loading checkpoint from {checkpoint_path}")
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        best_pr_auc    = ckpt['best_pr_auc']
+        patience_count = ckpt['patience_count']
+        best_epoch     = ckpt['best_epoch']
+        start_epoch    = ckpt['epoch'] + 1
 
     print(f"\n  {'epoch':>7}  {'loss':>8}  {'cls':>8}  {'reg':>8}  {'val_pr_auc':>10}  {'best':>8}")
     print(f"  {'-'*7}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*10}  {'-'*8}")
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         tr_loss, tr_cls, tr_reg = train_one_epoch(
             model, train_loader, optimizer, criterion, device, grad_clip)
         val_loss, val_pr_auc, _ = validate(
@@ -341,6 +354,23 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
             patience_count += 1
             if patience_count >= patience:
                 print(f"  Early stop at epoch {epoch+1} (best PR-AUC {best_pr_auc:.4f})")
+                break
+
+        # Save state for resuming
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_pr_auc': best_pr_auc,
+            'patience_count': patience_count,
+            'best_epoch': best_epoch,
+        }, checkpoint_path)
+        
+        # Check time limit
+        if global_start_time is not None and max_time_secs is not None:
+            if time.time() - global_start_time > max_time_secs:
+                print(f"  [time limit] Max time {max_time_secs}s reached. Stopping seed {seed} training early.")
                 break
 
     elapsed = time.time() - t_start
@@ -376,6 +406,9 @@ def main():
     os.makedirs(args.experiment_dir, exist_ok=True)
     seeds = train_cfg.get('seeds', [42])
 
+    global_start_time = time.time()
+    max_time_secs = 11.5 * 3600  # 11.5 hours in seconds
+
     # ── Train all seeds ──────────────────────────────────────────────────────
     all_val_logits  = []
     all_test_data   = []
@@ -384,12 +417,17 @@ def main():
 
     for seed in seeds:
         val_col, test_all, _, np_ = run_single_seed(
-            seed, data_cfg, train_cfg, model_cfg, device, args.experiment_dir)
+            seed, data_cfg, train_cfg, model_cfg, device, args.experiment_dir, 
+            global_start_time, max_time_secs)
         all_val_logits.append(val_col['logit'])
         all_test_data.append(test_all)
         val_ref  = val_col
         test_ref = test_all
         n_params = np_
+
+        if time.time() - global_start_time > max_time_secs:
+            print(f"  [time limit] Stopping seeds loop. Proceeding to evaluation...")
+            break
 
     # ── Ensemble: average probabilities across seeds ─────────────────────────
     def ens_prob(logit_list):
