@@ -377,13 +377,17 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
     print(f"\n  Elapsed: {elapsed:.1f}s  |  Best epoch: {best_epoch+1}")
 
     # ── Load best checkpoint → collect val + test logits ────────────────────
+    print(f"  [eval] Loading best model (epoch {best_epoch+1}, PR-AUC {best_pr_auc:.4f}) for inference...")
     model.load_state_dict(torch.load(
         os.path.join(ckpt_dir, 'best_model.pth'),
         map_location=device, weights_only=True))
     model.eval()
 
+    print(f"  [eval] Running val inference...")
     _, _, val_collected  = validate(model, val_loader,  criterion, device)
+    print(f"  [eval] Running test inference...")
     test_all = collect_all_heads(model, test_loader, device)
+    print(f"  [eval] Inference complete.")
 
     return val_collected, test_all, best_pr_auc, model.n_params()
 
@@ -407,7 +411,10 @@ def main():
     seeds = train_cfg.get('seeds', [42])
 
     global_start_time = time.time()
-    max_time_secs = 11.5 * 3600  # 11.5 hours in seconds
+    # 10.0h training budget → leaves ~2h for val/test inference + evaluation
+    # before Kaggle's 12h hard kill. Each epoch ≈ 2000s, so this fits ~18 epochs
+    # before the budget fires. The best checkpoint is always saved per epoch.
+    max_time_secs = 10.0 * 3600
 
     # ── Train all seeds ──────────────────────────────────────────────────────
     all_val_logits  = []
