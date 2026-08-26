@@ -17,6 +17,9 @@ class GraphGNN(nn.Module):
         # For the final layer, concat=False prevents dimension blow up
         self.conv2 = GATv2Conv(hidden_channels, out_channels, heads=heads, concat=False, edge_dim=1)
         self.relu = nn.ReLU()
+        self.norm1 = nn.LayerNorm(hidden_channels)
+        self.drop1 = nn.Dropout(p=0.2)
+        self.norm2 = nn.LayerNorm(out_channels)
         
     def forward(self, x, edge_index_flow, edge_index_spatial, edge_weight_spatial):
         # We combine flow and spatial edges into a single adjacency matrix for the single-mode stack
@@ -28,6 +31,9 @@ class GraphGNN(nn.Module):
         
         x = self.conv1(x, combined_edge_index, edge_attr=combined_edge_weight)
         x = self.relu(x)
+        x = self.norm1(x)
+        x = self.drop1(x)
         x = self.conv2(x, combined_edge_index, edge_attr=combined_edge_weight)
+        x = self.norm2(x)
         
         return x
