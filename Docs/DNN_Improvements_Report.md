@@ -7,6 +7,40 @@
 
 ---
 
+> [!CAUTION]
+> ## Critical Bugs Found and Fixed (Revision 2)
+>
+> The first improvement pass introduced two bugs in `sar_cnn.py` that silently **degraded performance** from `0.3689` → `0.2242` val PR-AUC and caused **0 detections** on the test set.
+>
+> ### Bug 1 — `BatchNorm1d` collapses to zero when V = 1
+>
+> **What happened:** Only a handful of the 51 nodes have SAR chips per snapshot (263 chips across the whole dataset — very sparse). When only **1 node** has SAR in a snapshot, `BatchNorm1d` receives a single-sample batch:
+> ```
+> mean   = that one sample itself  →  variance = 0
+> output = (x − x) / sqrt(0 + ε) × γ + β  =  0 × 1 + 0  =  0
+> ```
+> The SAR embedding silently became **all-zeros** for V=1 snapshots (which is most snapshots), destroying the SAR signal entirely — no NaN, no warning, just silent garbage that poisoned FusionBlock training.
+>
+> **Fix:** Replaced `BatchNorm1d` with `LayerNorm`. LayerNorm normalises over the *feature* dimension (not the batch dimension), so it works correctly for any V ≥ 1.
+>
+> **Lecture connection (Lecture 5 — Layer Normalisation):**
+> > *"Layer Norm computes mean/variance across all features within a single example, independent of batch size — good for settings where batch composition varies."*
+>
+> This is exactly the motivation: the number of SAR chips per snapshot varies from 0 to ~51, so a batch-size-independent normalisation is required.
+>
+> ### Bug 2 — Hardcoded dB-scale SAR normalisation (wrong units assumption)
+>
+> **What happened:** The SAR normalization used `mean=(−10 dB, −17 dB), std=(5 dB, 5 dB)` — typical Sentinel-1 statistics in **decibel scale**. If the dataset's SAR chips are stored in linear scale, already pre-normalised, or in a different unit, applying these values produces wildly wrong inputs to ResNet-18, making its pretrained features useless.
+>
+> **Fix:** Replaced with `nn.InstanceNorm2d(affine=True)` — this normalises each chip's VV and VH channels independently per sample (zero mean, unit variance), making **no assumption about absolute units**. It works correctly regardless of whether chips are in dB, linear power, or pre-normalised form.
+>
+> **Lecture connection (Lecture 5 — Normalising Inputs):**
+> > *"Unequal scales = unequal footing → gradient descent trips and zig-zags. Normalise = level playing field → walks straight to the goal."*
+>
+> `InstanceNorm2d` is the correct "level playing field" here because it adapts to each chip's own distribution rather than assuming a global distribution.
+
+---
+
 ## 1. Diagnosis — What the Training Logs Revealed
 
 Before making any changes, the training logs were analysed against the diagnostic framework taught in **Lecture 5 (Slide: "Comparison Table — Underfitting vs Just Right vs Overfitting")**.
