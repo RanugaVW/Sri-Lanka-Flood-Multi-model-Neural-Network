@@ -14,7 +14,8 @@ predictions.
 Forward signature
 -----------------
 temporal_features  : [N, L, F]    all N nodes, L lookback days, F features
-terrain_features   : [N, 9]       static node features
+terrain_features   : [N, 10]      static node features (see graph_builder.py)
+basin_idx          : [N] long     basin identity (embedded inside FiLMTerrain)
 sar_chips          : [N, 2, H, W] SAR chip per node (zeros where absent)
 has_sar            : [N] bool     presence mask
 edge_index_flow    : [2, E_flow]
@@ -37,12 +38,14 @@ from .fusion           import FusionBlock
 from .graph_gnn        import GraphGNN
 from .heads            import OutputHeads
 
+from data.graph_builder import TERRAIN_DIM
+
 
 class FloodModel(nn.Module):
-    def __init__(self, config=None):
+    def __init__(self, config=None, num_basins=16):
         super().__init__()
         self.temporal_encoder = TemporalEncoder()
-        self.film_terrain     = FiLMTerrain(input_dim=9)
+        self.film_terrain     = FiLMTerrain(input_dim=TERRAIN_DIM, num_basins=num_basins)
         self.sar_cnn          = SARCNN()
         self.fusion           = FusionBlock()
         self.gnn              = GraphGNN()
@@ -51,7 +54,8 @@ class FloodModel(nn.Module):
     def forward(
         self,
         temporal_features,     # [N, L, F]
-        terrain_features,      # [N, 9]
+        terrain_features,      # [N, TERRAIN_DIM]
+        basin_idx,              # [N] long
         sar_chips,             # [N, 2, H, W]
         has_sar,               # [N] bool
         edge_index_flow,       # [2, E_flow]
@@ -62,7 +66,7 @@ class FloodModel(nn.Module):
         h = self.temporal_encoder(temporal_features)          # [N, 128]
 
         # 2. FiLM terrain conditioning
-        h = self.film_terrain(terrain_features, h)            # [N, 128]
+        h = self.film_terrain(terrain_features, basin_idx, h)  # [N, 128]
 
         # 3. SAR embedding (learned missing-embedding when has_sar=False)
         sar_emb = self.sar_cnn(sar_chips, has_sar)           # [N, 64]

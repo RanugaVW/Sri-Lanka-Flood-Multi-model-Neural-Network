@@ -241,6 +241,7 @@ def evaluate_model(model, val_loader, device, output_file=None):
         for batch in val_loader:
             temporal  = batch['temporal_features'][0].to(device)
             terrain   = batch['terrain_features'][0].to(device)
+            basin_idx = batch['basin_idx'][0].to(device)
             sar       = batch['sar_chips'][0].to(device)
             has_sar   = batch['has_sar'][0].to(device)
             targets   = batch['targets'][0].to(device)
@@ -249,7 +250,7 @@ def evaluate_model(model, val_loader, device, output_file=None):
             ei_sp     = batch['edge_index_spatial'][0].to(device)
             ew_sp     = batch['edge_weight_spatial'][0].to(device)
 
-            out = model(temporal, terrain, sar, has_sar, ei_flow, ei_sp, ew_sp)
+            out = model(temporal, terrain, basin_idx, sar, has_sar, ei_flow, ei_sp, ew_sp)
 
             lg  = out['logits'].cpu().numpy()
             reg = out['reg'].cpu().numpy()

@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader
 # Make src imports work
 sys.path.insert(0, os.path.dirname(__file__))
 from data.dataset import FloodDataset
+from data.graph_builder import TERRAIN_DIM
 from models.flood_model import FloodModel
 from losses.multitask_loss import MultiTaskLoss
 
@@ -114,7 +115,7 @@ def objective(trial, data_cfg, device, experiment_dir, n_epochs_hpo=15, patience
                 dropout=dropout,
             )
             self.film_terrain = FiLMTerrain(
-                input_dim=9,
+                input_dim=TERRAIN_DIM,
                 hidden_dim=64,
                 output_dim=gru_hidden_dim,
             )
@@ -135,10 +136,10 @@ def objective(trial, data_cfg, device, experiment_dir, n_epochs_hpo=15, patience
                 dropout=dropout,
             )
 
-        def forward(self, temporal_features, terrain_features, sar_chips,
+        def forward(self, temporal_features, terrain_features, basin_idx, sar_chips,
                     has_sar, edge_index_flow, edge_index_spatial, edge_weight_spatial):
             temporal_out      = self.temporal_encoder(temporal_features)
-            modulated_temporal = self.film_terrain(terrain_features, temporal_out)
+            modulated_temporal = self.film_terrain(terrain_features, basin_idx, temporal_out)
             sar_embedding     = self.sar_cnn(sar_chips, has_sar)
             fused             = self.fusion(modulated_temporal, sar_embedding)
             gnn_out           = self.gnn(fused, edge_index_flow,
@@ -167,6 +168,7 @@ def objective(trial, data_cfg, device, experiment_dir, n_epochs_hpo=15, patience
             optimizer.zero_grad()
             temporal_features  = batch['temporal_features'].to(device)
             terrain_features   = batch['terrain_features'][0].to(device)
+            basin_idx          = batch['basin_idx'][0].to(device)
             sar_chips          = batch['sar_chips'][0].to(device)
             has_sar            = batch['has_sar'][0].to(device)
             targets            = batch['targets'][0].to(device)
@@ -174,7 +176,7 @@ def objective(trial, data_cfg, device, experiment_dir, n_epochs_hpo=15, patience
             edge_index_spatial = batch['edge_index_spatial'][0].to(device)
             edge_weight_spatial = batch['edge_weight_spatial'][0].to(device)
 
-            preds = model(temporal_features[0], terrain_features,
+            preds = model(temporal_features[0], terrain_features, basin_idx,
                           sar_chips, has_sar,
                           edge_index_flow, edge_index_spatial, edge_weight_spatial)
             lc = criterion(preds, targets)
@@ -190,13 +192,14 @@ def objective(trial, data_cfg, device, experiment_dir, n_epochs_hpo=15, patience
             for batch in val_loader:
                 temporal_features  = batch['temporal_features'].to(device)
                 terrain_features   = batch['terrain_features'][0].to(device)
+                basin_idx          = batch['basin_idx'][0].to(device)
                 sar_chips          = batch['sar_chips'][0].to(device)
                 has_sar            = batch['has_sar'][0].to(device)
                 targets            = batch['targets'][0].to(device)
                 edge_index_flow    = batch['edge_index_flow'][0].to(device)
                 edge_index_spatial = batch['edge_index_spatial'][0].to(device)
                 edge_weight_spatial = batch['edge_weight_spatial'][0].to(device)
-                preds = model(temporal_features[0], terrain_features,
+                preds = model(temporal_features[0], terrain_features, basin_idx,
                               sar_chips, has_sar,
                               edge_index_flow, edge_index_spatial, edge_weight_spatial)
                 val_loss += criterion(preds, targets).total.item()

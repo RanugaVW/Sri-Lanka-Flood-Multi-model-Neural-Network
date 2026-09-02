@@ -9,8 +9,8 @@ discharge, 3-day max z-score) for 51 river-gauge nodes across Sri Lanka, fusing:
 
 1. **Tabular time series** (33 dynamic features/day: precip, soil moisture, discharge, derived antecedent-
    precipitation/anomaly features) via a PLR-tokenizing Transformer.
-2. **Static terrain** (currently just lat/lon/elevation from `nodes.csv`, zero-padded to 9 dims) via FiLM
-   modulation of the temporal embedding.
+2. **Static terrain** (elevation + flow-topology-derived drainage proxies + zone/position one-hot + a learned
+   basin embedding, from `nodes.csv`/`edges.csv`) via FiLM modulation of the temporal embedding.
 3. **Sentinel-1 SAR imagery** (VV/VH chips) via a ResNet-18 CNN with a learned "missing" embedding for
    nodes/days without a chip.
 4. **River topology** (35 directed flow edges + 204 distance-weighted spatial edges) via a 2-layer GATv2Conv.
@@ -42,9 +42,9 @@ python src/eval/evaluate_metrics.py --experiment_dir experiments/<name> --data_c
 # Tuned LightGBM baseline (separate script, own Optuna search)
 python src/baselines/gbm_baseline.py --data_config configs/kaggle_data.yaml --output_dir experiments/gbm_baseline --n_trials 50
 
-# Tests (pytest works, but see "Known gaps" — test_forward_pass.py is stale)
+# Tests
 pytest tests/
-python tests/test_forward_pass.py   # currently fails against the current FloodModel/MultiTaskLoss signatures
+python tests/test_forward_pass.py
 ```
 
 No dedicated single-test invocation exists beyond standard `pytest tests/test_forward_pass.py::test_forward_and_backward`.
@@ -59,7 +59,13 @@ O(1) sliding-window slicing, and returns per `__getitem__`:
 
 - `temporal_features [N, 14, 33]` — 14-day lookback, z-scored (StandardScaler **fit on train split only**,
   reused for val/test — leakage control), heavy-tailed columns (precip/discharge) log1p'd first.
-- `terrain_features [N, 9]` — static, same every call, built once by `src/data/graph_builder.py`.
+- `terrain_features [N, 10]` + `basin_idx [N]` — static, same every call, built once by
+  `src/data/graph_builder.py`. `terrain_features` = `[elevation_m, upstream_node_count, distance_to_outlet_km]`
+  (all z-scored across the 51 nodes) + `zone` one-hot (3) + `position` one-hot (4); `upstream_node_count`
+  and `distance_to_outlet_km` are derived once from the flow-edge chain in `edges.csv` (depth from the basin
+  headwater, and remaining flow-path length to the basin outlet — the flow graph here is a simple per-basin
+  chain, no confluences, so these are well-defined). `basin_idx` (0–15, one of 16 river systems) is looked up
+  separately as a learned embedding inside `FiLMTerrain` rather than one-hot, to avoid bloating the input width.
 - `sar_chips [N, 2, 512, 512]` + `has_sar [N]` — see SAR caveat below.
 - `targets [N, 6]`, `valid_mask [N]`, `label_conf [N]`, `event_ids [N]`, plus the static
   `edge_index_flow` / `edge_index_spatial` / `edge_weight_spatial`.
@@ -83,7 +89,8 @@ sar_chips, has_sar ──────────────► SARCNN ──�
   It's a PLR (Periodic-Linear-ReLU) numeric-feature tokenizer feeding two parallel Transformer streams — one
   attending across the 14 days, one attending across the 33 feature channels — merged via
   `LayerNorm(h_temporal + h_feature)`. Output is always 128-dim regardless of config.
-- **FiLMTerrain**: `Linear(9,64)→ReLU→Dropout→Linear(64,256)` → gamma/beta, applied as
+- **FiLMTerrain**: concatenates the 10-dim terrain vector with an 8-dim learned basin embedding (looked up via
+  `basin_idx`), then `Linear(18,64)→ReLU→Dropout→Linear(64,256)` → gamma/beta, applied as
   `LayerNorm(gamma*h + beta + h)` (residual, so a degenerate FiLM branch can't erase the temporal signal).
 - **SARCNN**: `InstanceNorm2d` (per-chip, unit-agnostic — replaced a bug-prone hardcoded dB normalization) →
   3×3 avg-pool despeckle → 1×1 conv to 3 channels → pretrained ResNet-18 → `Linear→LayerNorm` to 64-dim.
@@ -161,12 +168,14 @@ prefer it, then the source, over `README.md`/`ARCHITECTURE_SPEC.md` for anything
   all-51-or-nothing). See `IMAGE_DATASET.md` and `data/sar_chips/sar_flood_lite/README.txt` for the full
   manifest — `image_dataset.csv` there has a per-image `site_id`/`tabular_key` mapping to `node_id` that could
   drive a future standalone SAR-classifier pretraining step (Plan.md Phase I).
-- **`nodes.csv` static features are thin.** `FiLMTerrain`'s 9-dim input is real terrain data for only
-  `elevation_m` (+`lat`/`lon`/`snap_lat`/`snap_lon`, which are coordinates, not physiographic features) —
-  the README's claim of "flow accumulation" etc. isn't in the actual `nodes.csv` columns, so 4+ of the 9 FiLM
-  input dims are zero-padding.
-- **`tests/test_forward_pass.py` is stale** — it calls `model(...)` expecting a `[N,6]` tensor and
-  `criterion(predictions, targets)` with no mask/conf args, but `FloodModel.forward` returns a
-  `{"logits","reg"}` dict and `MultiTaskLoss.forward` requires `(out, targets, mask, conf)`. It will fail as-is.
+- ~~`nodes.csv` static features are thin (mostly zero-padding)~~ — **fixed.** `graph_builder.py` now derives
+  `upstream_node_count` and `distance_to_outlet_km` from the flow-edge chain, one-hots `zone`/`position`, and
+  passes `basin` through as a learned embedding inside `FiLMTerrain` (see Architecture above). `TERRAIN_DIM`
+  is now 10 (was 9, ~half zero-padded). This is a real architecture change — `FiLMTerrain`/`FloodModel`'s
+  `forward()` signatures gained a `basin_idx` argument, so old checkpoints don't load (expected, per the
+  "clean best-effort" call — retrain from scratch).
+- ~~`tests/test_forward_pass.py` is stale~~ — **fixed**, now matches `FloodModel.forward`'s dict return and
+  `MultiTaskLoss.forward(out, targets, mask, conf)` signature, and passes `basin_idx`. Passes via both
+  `pytest tests/test_forward_pass.py` and direct execution.
 - `src/calibration/` and `configs/experiments/` are effectively empty (see above) — don't assume code lives
   there just because the spec docs say it should.

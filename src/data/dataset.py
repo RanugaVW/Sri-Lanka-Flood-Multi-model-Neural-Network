@@ -2,7 +2,8 @@
 
 Each __getitem__ returns ONE full-graph day snapshot:
   temporal_features : [N, L, F]  — all N nodes, L-day window, F features
-  terrain_features  : [N, 9]     — static (same every day)
+  terrain_features  : [N, 10]    — static (same every day, see graph_builder.py)
+  basin_idx         : [N]        — basin identity (0-15), static
   sar_chips         : [N, 2, H, W]
   has_sar           : [N] bool
   targets           : [N, 6]     — 4 cls + 2 reg targets
@@ -335,6 +336,7 @@ class FloodDataset(Dataset):
         return {
             'temporal_features':    temporal,
             'terrain_features':     self.static_graph.x,
+            'basin_idx':            self.static_graph.basin_idx,
             'sar_chips':            sar,
             'has_sar':              has_sar,
             'targets':              targets,

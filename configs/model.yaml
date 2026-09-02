@@ -5,7 +5,8 @@ temporal_encoder:
   num_layers: 1
 
 film_terrain:
-  input_dim: 9
+  input_dim: 10               # elevation, upstream_count, dist_to_outlet, zone(3), position(4) — see graph_builder.py
+  num_basins: 16               # basin identity, consumed via a learned nn.Embedding inside FiLMTerrain
   hidden_dim: 64
   output_dim: 128            # gamma/beta each 128-dim
 

@@ -59,6 +59,7 @@ def _unpack(batch, device):
         {
             'temporal':  batch['temporal_features'][0].to(device),
             'terrain':   batch['terrain_features'][0].to(device),
+            'basin_idx': batch['basin_idx'][0].to(device),
             'sar':       batch['sar_chips'][0].to(device),
             'has_sar':   batch['has_sar'][0].to(device),
             'ei_flow':   batch['edge_index_flow'][0].to(device),
@@ -73,7 +74,7 @@ def _unpack(batch, device):
 
 def _forward(model, inp):
     return model(
-        inp['temporal'], inp['terrain'],
+        inp['temporal'], inp['terrain'], inp['basin_idx'],
         inp['sar'],      inp['has_sar'],
         inp['ei_flow'],  inp['ei_sp'], inp['ew_sp'],
     )
