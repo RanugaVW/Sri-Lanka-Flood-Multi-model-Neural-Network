@@ -21,6 +21,7 @@ Leakage controls
 """
 import os
 import pickle
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -36,8 +37,15 @@ _SAR_SCALE = 35.0 / 255.0
 _SAR_SHIFT = -30.0
 
 
+@lru_cache(maxsize=32)
 def _decode_sar_png(path: str) -> np.ndarray:
-    """Load a SAR PNG → (2, H, W) float32 array in dB [VV, VH]."""
+    """Load a SAR PNG → (2, H, W) float32 array in dB [VV, VH].
+
+    Cached by path: the same nearest chip is reused across ~max_age_days
+    consecutive daily snapshots for a given node, so decoding it once per
+    distinct file (instead of once per snapshot) avoids redundant PNG
+    decode work now that each node looks up its own site independently.
+    """
     img = np.array(Image.open(path).convert('RGB'), dtype=np.float32)
     vv  = img[:, :, 0] * _SAR_SCALE + _SAR_SHIFT
     vh  = img[:, :, 1] * _SAR_SCALE + _SAR_SHIFT
@@ -47,7 +55,15 @@ def _decode_sar_png(path: str) -> np.ndarray:
 # ── SAR chip index ────────────────────────────────────────────────────────────
 
 class SARIndex:
-    """Maps (site_id, query_date) → nearest SAR chip within max_age_days."""
+    """Maps (node_id, query_date) → nearest SAR chip within max_age_days.
+
+    One sub-index is built per site directory under `sar_root/frames/` whose
+    name matches a `node_id` — SAR site IDs (e.g. KEL_HAN, KAL_BUL) are the
+    same strings as node IDs in nodes.csv, so this covers exactly the nodes
+    with real per-node imagery (9 of 51 in the current dataset). Nodes with
+    no matching directory simply have no entry and always resolve to
+    has_sar=False — no imagery is ever broadcast across nodes.
+    """
 
     def __init__(self, sar_root: str, site_ids=None, max_age_days: int = 12):
         self.sar_root      = sar_root
@@ -84,8 +100,8 @@ class SARIndex:
         print(f"  [SARIndex] {total} chips across {len(self.index)} sites "
               f"(max_age={max_age_days}d)")
 
-    def get_chip(self, site_id: str, query_date: pd.Timestamp):
-        entries = self.index.get(site_id)
+    def get_chip(self, node_id: str, query_date: pd.Timestamp):
+        entries = self.index.get(node_id)
         if not entries:
             return None, False
         dates = [e[0] for e in entries]
@@ -116,8 +132,7 @@ class FloodDataset(Dataset):
     scaler          : pre-fitted StandardScaler (required for val/test)
     scaler_save_path: if given, saves the train scaler to this path
     sar_root        : root directory for SAR chips (None → SAR disabled)
-    sar_site        : which site to look up (default 'KEL_HAN')
-    sar_max_age_days: max days between query date and nearest SAR chip
+    sar_max_age_days: max days between query date and nearest SAR chip, per node
     sar_chip_size   : target chip spatial size in pixels
     """
 
@@ -144,17 +159,14 @@ class FloodDataset(Dataset):
         scaler=None,
         scaler_save_path: str   = None,
         sar_root:         str   = None,
-        sar_site:         str   = 'KEL_HAN',
         sar_max_age_days: int   = 12,
         sar_chip_size:    int   = 512,
     ):
         self.split_type   = split_type
         self.window_days  = window_days
         self.sar_chip_size = sar_chip_size
-        self.sar_site     = sar_site
-
-        # ── SAR index ─────────────────────────────────────────────────────────
-        self.sar_index = SARIndex(sar_root, [sar_site], sar_max_age_days)
+        self._sar_root    = sar_root
+        self._sar_max_age_days = sar_max_age_days
 
         # ── Load full panel (unfiltered) ──────────────────────────────────────
         print(f"Loading {panel_path}...")
@@ -209,6 +221,13 @@ class FloodDataset(Dataset):
         self.edges_df = pd.read_csv(edges_path)
         self.static_graph = build_static_graph(self.nodes_df, self.edges_df)
 
+        # ── SAR index — one sub-index per node_id that has its own SAR site ────
+        self.sar_index = SARIndex(
+            self._sar_root,
+            site_ids=self.nodes_df['node_id'].tolist(),
+            max_age_days=self._sar_max_age_days,
+        )
+
         # ── Pivot into 3-D dense arrays [T, N, *] ─────────────────────────────
         print("Pivot data into 3D array (nodes, dates, features) for fast sliding window access...")
         split_df['date'] = pd.to_datetime(split_df['date'])
@@ -261,8 +280,28 @@ class FloodDataset(Dataset):
         print(f"  Ready: {len(self.valid_idx)} valid day snapshots "
               f"({N} nodes each).")
 
+        # Node indices that actually have a SAR site — avoids a dict lookup
+        # per node per snapshot for the ~80% of nodes that never have SAR.
+        self._sar_node_idx = [
+            (i, node_id) for i, node_id in enumerate(self.unique_nodes)
+            if node_id in self.sar_index.index
+        ]
+
     def __len__(self):
         return len(self.valid_idx)
+
+    def _resize_chip(self, chip_arr: np.ndarray) -> np.ndarray:
+        """Resize a decoded (2, H, W) chip to (2, sar_chip_size, sar_chip_size)
+        if needed. A no-op for the shipped 512x512 chips at the default size."""
+        h, w = chip_arr.shape[1], chip_arr.shape[2]
+        if h == self.sar_chip_size and w == self.sar_chip_size:
+            return chip_arr
+        resized = np.zeros((2, self.sar_chip_size, self.sar_chip_size), dtype=np.float32)
+        for c in range(2):
+            ch = Image.fromarray(chip_arr[c]).resize(
+                (self.sar_chip_size, self.sar_chip_size), Image.BILINEAR)
+            resized[c] = np.array(ch, dtype=np.float32)
+        return resized
 
     def __getitem__(self, idx):
         d = self.valid_idx[idx]
@@ -276,27 +315,22 @@ class FloodDataset(Dataset):
         label_conf = torch.tensor(self.label_conf[d], dtype=torch.float32)  # [N]
         event_ids  = torch.tensor(self.event_ids[d],  dtype=torch.int32)    # [N]
 
-        # SAR chip (broadcast same chip to all nodes for this day)
+        # SAR chip — looked up independently per node's own site (no broadcast
+        # across unrelated basins); only nodes with a SAR site nearby and a
+        # chip within max_age_days get a real chip, the rest stay zero/False.
         query_date = pd.Timestamp(self.unique_dates[d])
-        chip_arr, has_chip = self.sar_index.get_chip(self.sar_site, query_date)
-
         N   = len(self.unique_nodes)
         sar = torch.zeros((N, 2, self.sar_chip_size, self.sar_chip_size),
                           dtype=torch.float32)
         has_sar = torch.zeros(N, dtype=torch.bool)
 
-        if has_chip and chip_arr is not None:
-            h, w = chip_arr.shape[1], chip_arr.shape[2]
-            if h != self.sar_chip_size or w != self.sar_chip_size:
-                resized = np.zeros((2, self.sar_chip_size, self.sar_chip_size),
-                                   dtype=np.float32)
-                for c in range(2):
-                    ch = Image.fromarray(chip_arr[c]).resize(
-                        (self.sar_chip_size, self.sar_chip_size), Image.BILINEAR)
-                    resized[c] = np.array(ch, dtype=np.float32)
-                chip_arr = resized
-            sar[:]     = torch.tensor(chip_arr).unsqueeze(0).expand(N, -1, -1, -1)
-            has_sar[:] = True
+        for i, node_id in self._sar_node_idx:
+            chip_arr, has_chip = self.sar_index.get_chip(node_id, query_date)
+            if not has_chip or chip_arr is None:
+                continue
+            chip_arr = self._resize_chip(chip_arr)
+            sar[i]     = torch.tensor(chip_arr)
+            has_sar[i] = True
 
         return {
             'temporal_features':    temporal,
