@@ -71,9 +71,12 @@ O(1) sliding-window slicing, and returns per `__getitem__`:
   `edge_index_flow` / `edge_index_spatial` / `edge_weight_spatial`.
 
 `DataLoader` always runs with `batch_size=1` — each "batch" *is* one graph snapshot (all 51 nodes), so
-`train.py::_unpack` immediately does `batch[key][0]` to drop the fake batch dimension. Splits come from the
-`split_temporal` column (train=2020–2022, val=2023, test=2024, per `configs/data.yaml`); a `split_basin_holdout`
-column exists for a second (unused-by-default) protocol. `valid_sample` filters rows before anything else.
+`train.py::_unpack` immediately does `batch[key][0]` to drop the fake batch dimension. Splits come entirely from
+a precomputed `split_temporal` column baked into the parquet (train=2003–2017, val=2018–2020, test=2021–2025) —
+`dataset.py` never reads `configs/data.yaml`'s `splits:` block, which is informational-only documentation of
+those same ranges, not a live knob. A `split_basin_holdout` column exists for a second protocol (holdout basin
+"Gin", 4 nodes) — genuinely wired to that config value, unlike the temporal split. `valid_sample` filters rows
+before anything else.
 
 ### Model pipeline (`src/models/flood_model.py::FloodModel`)
 

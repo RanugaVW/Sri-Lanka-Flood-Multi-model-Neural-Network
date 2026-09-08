@@ -149,6 +149,30 @@ class FloodDataset(Dataset):
         'flood_state', 'label_confidence', 'thr_moderate',
         'thr_high', 'thr_severe',
     }
+    # Explicit, curated dynamic-feature list (33 cols) — replaces a blind
+    # "first 33 non-excluded columns" positional cutoff that silently kept
+    # `river_discharge` (an exact duplicate of `discharge`, r=1.0 on the
+    # real panel) and several of the weakest-correlated raw columns, while
+    # dropping the discharge/soil-moisture anomaly & percentile columns
+    # that sit later in the parquet's column order. On the actual data
+    # those anomaly columns correlate with target_flood_1d at 0.20–0.29,
+    # stronger than several columns the cutoff kept (q_clim_mean 0.05,
+    # q_clim_std 0.07, windspeed_10m_max 0.03). Verified against
+    # data/processed/flood_dataset.parquet before making this change.
+    FEATURE_COLS = [
+        'precipitation_sum_power', 'temperature_2m_mean', 'temperature_2m_max',
+        'relative_humidity_2m', 'shortwave_radiation',
+        'soil_wet_top', 'soil_wet_root', 'soil_wet_profile',
+        'soil_wet_top_anom', 'soil_wet_root_anom', 'soil_wet_profile_anom',
+        'precip_era5', 'precipitation_sum',
+        'precip_sum_2d', 'precip_sum_3d', 'precip_sum_5d', 'precip_sum_7d',
+        'precip_sum_10d', 'precip_sum_15d', 'precip_sum_30d',
+        'precip_max_3d', 'precip_max_7d', 'api_k090', 'wetdays_7d',
+        'discharge', 'log_discharge',
+        'discharge_anom', 'discharge_zscore', 'discharge_pctl',
+        'discharge_rise_1d', 'discharge_rise_3d',
+        'discharge_mean_3d', 'discharge_mean_7d',
+    ]
 
     def __init__(
         self,
@@ -176,8 +200,10 @@ class FloodDataset(Dataset):
             full_df = full_df[full_df['valid_sample'] == True]
 
         # ── Feature columns ───────────────────────────────────────────────────
-        exclude = self.EXCLUDE_COLS | set(self.TARGET_COLS)
-        self.feature_cols = [c for c in full_df.columns if c not in exclude][:33]
+        self.feature_cols = [c for c in self.FEATURE_COLS if c in full_df.columns]
+        missing = set(self.FEATURE_COLS) - set(self.feature_cols)
+        if missing:
+            print(f"  [warn] FEATURE_COLS missing from panel, skipped: {sorted(missing)}")
 
         # ── Log1p transform heavy-tailed columns (before z-scoring) ──────────
         LOG1P_COLS = {

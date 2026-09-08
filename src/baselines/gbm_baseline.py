@@ -56,6 +56,26 @@ EXCLUDE_COLS = set(
     ]
 )
 
+# Kept in sync with FloodDataset.FEATURE_COLS (src/data/dataset.py) so the
+# GBM baseline is trained on the same explicit, correlation-justified
+# feature set as the neural model, instead of an arbitrary "first 33
+# columns" cutoff that used to include an exact duplicate (`river_discharge`
+# == `discharge`) and drop the more-predictive anomaly/percentile columns.
+FEATURE_COLS = [
+    'precipitation_sum_power', 'temperature_2m_mean', 'temperature_2m_max',
+    'relative_humidity_2m', 'shortwave_radiation',
+    'soil_wet_top', 'soil_wet_root', 'soil_wet_profile',
+    'soil_wet_top_anom', 'soil_wet_root_anom', 'soil_wet_profile_anom',
+    'precip_era5', 'precipitation_sum',
+    'precip_sum_2d', 'precip_sum_3d', 'precip_sum_5d', 'precip_sum_7d',
+    'precip_sum_10d', 'precip_sum_15d', 'precip_sum_30d',
+    'precip_max_3d', 'precip_max_7d', 'api_k090', 'wetdays_7d',
+    'discharge', 'log_discharge',
+    'discharge_anom', 'discharge_zscore', 'discharge_pctl',
+    'discharge_rise_1d', 'discharge_rise_3d',
+    'discharge_mean_3d', 'discharge_mean_7d',
+]
+
 
 # ---------------------------------------------------------------------------
 # Data helpers
@@ -76,7 +96,7 @@ def load_flat_split(panel_path: str, split: str):
 
 
 def get_feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in EXCLUDE_COLS][:33]
+    return [c for c in FEATURE_COLS if c in df.columns]
 
 
 # ---------------------------------------------------------------------------

@@ -5,10 +5,17 @@ data_paths:
   edges_spatial: data/processed/edges.csv
   sar_chips: data/sar_chips/
 
+# NOTE: this `splits:` block is informational only — src/data/dataset.py never
+# reads it. The actual train/val/test filtering comes from the precomputed
+# `split_temporal` / `split_basin_holdout` columns already baked into
+# flood_dataset.parquet. These year ranges document what those columns
+# actually contain (verified against the parquet directly), not a knob you
+# can turn here — to change the real split, the parquet's split column has
+# to be regenerated upstream.
 splits:
   temporal:
-    train_years: [2020, 2021, 2022]
-    val_years: [2023]
-    test_years: [2024]
+    train_years: [2003, 2017]   # inclusive range, not an enumerated list
+    val_years: [2018, 2020]
+    test_years: [2021, 2025]
   basin_holdout:
     holdout_basin: "Gin"
