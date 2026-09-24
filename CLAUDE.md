@@ -89,9 +89,15 @@ sar_chips, has_sar ──────────────► SARCNN ──�
 ```
 
 - **TemporalEncoder** (`temporal_encoder.py`): *not* the GRU described in `ARCHITECTURE_SPEC.md`/`README.md`.
-  It's a PLR (Periodic-Linear-ReLU) numeric-feature tokenizer feeding two parallel Transformer streams — one
-  attending across the 14 days, one attending across the 33 feature channels — merged via
-  `LayerNorm(h_temporal + h_feature)`. Output is always 128-dim regardless of config.
+  It's a PLR (Periodic-Linear-ReLU) numeric-feature tokenizer feeding three parallel streams — a Transformer
+  attending across the 14 days, a Transformer attending across the 33 feature channels, and a bidirectional
+  GRU that walks the 14 day-tokens forward (oldest→most-recent) and backward (most-recent→oldest) to capture
+  directional trend (e.g. climbing vs receding discharge) that self-attention represents only weakly, since
+  attention lets every day attend every other day regardless of order and relies solely on the additive
+  positional embedding for sequence direction. All three are merged via
+  `LayerNorm(h_temporal + h_feature + h_dir)`. Output is always 128-dim regardless of config. Adding the
+  BiGRU stream introduced new parameters (`dir_gru`, `dir_norm`), so checkpoints saved before this change
+  don't load — same "retrain from scratch" tradeoff as the terrain/basin-embedding change below.
 - **FiLMTerrain**: concatenates the 10-dim terrain vector with an 8-dim learned basin embedding (looked up via
   `basin_idx`), then `Linear(18,64)→ReLU→Dropout→Linear(64,256)` → gamma/beta, applied as
   `LayerNorm(gamma*h + beta + h)` (residual, so a degenerate FiLM branch can't erase the temporal signal).
@@ -103,7 +109,13 @@ sar_chips, has_sar ──────────────► SARCNN ──�
   `Linear→ReLU→Dropout(0.2)→Linear→LayerNorm` (no trailing ReLU — negative dims are needed downstream).
 - **GraphGNN**: flow edges (weight=1.0) and spatial edges (weight=`exp(-distance_km/40)`) are concatenated
   into one adjacency and run through 2 stacked `GATv2Conv` layers (4 heads), each followed by
-  `LayerNorm`(+`Dropout(0.2)` after layer 1).
+  `LayerNorm`(+`Dropout(0.2)` after layer 1), with a **residual connection around the whole block**
+  (`LayerNorm(gnn_out + fusion_in)`) — mirrors `FiLMTerrain`'s residual rationale: with 2
+  randomly-initialized GATv2 layers and no skip path, a graph signal that isn't immediately useful can
+  actively corrupt the fused embedding instead of just contributing nothing. Added after a sibling project
+  on the same dataset (`Srilanka-Flood-Data-Set-Creation`) found its graph-based model underperforming its
+  graph-free one (PR-AUC 0.742 vs 0.8355) — the residual doesn't remove the graph, it just lets training
+  learn to discount it if message passing isn't earning its place.
 - **OutputHeads**: separate `Linear→GELU→Dropout→Linear` MLPs for 4 classification logits
   (`flood_t+1/t+2/t+3`, `onset`) and 2 regression outputs (`discharge_t+1`, `3-day max z-score`). Returns
   **raw logits**, never sigmoid — calibration happens post-hoc in `train.py`, and `BCEWithLogitsLoss` needs

@@ -3,7 +3,10 @@ learning_rate: 1e-3
 weight_decay: 1e-4
 epochs: 60
 patience: 10
-grad_clip_norm: 1.0
+grad_clip_norm: 2.0   # was 1.0; a closely related architecture (see models/README.md
+                       # in the sibling Srilanka-Flood-Data-Set-Creation repo) found the
+                       # clip binding on 30-54% of steps at norm=1.0, throttling real
+                       # gradient signal rather than just preventing blowups
 loss: bce          # bce | focal | focal_conf  (BCE is best on this dataset)
 seeds: [42]
 calibration: temperature

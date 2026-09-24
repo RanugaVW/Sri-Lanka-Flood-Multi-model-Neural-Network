@@ -25,15 +25,22 @@ class GraphGNN(nn.Module):
         # We combine flow and spatial edges into a single adjacency matrix for the single-mode stack
         # Flow edges get a default weight of 1.0
         edge_weight_flow = torch.ones(edge_index_flow.size(1), device=x.device)
-        
+
         combined_edge_index = torch.cat([edge_index_flow, edge_index_spatial], dim=1)
         combined_edge_weight = torch.cat([edge_weight_flow, edge_weight_spatial], dim=0).unsqueeze(1)
-        
+
+        x_in = x
         x = self.conv1(x, combined_edge_index, edge_attr=combined_edge_weight)
         x = self.relu(x)
         x = self.norm1(x)
         x = self.drop1(x)
         x = self.conv2(x, combined_edge_index, edge_attr=combined_edge_weight)
-        x = self.norm2(x)
-        
+        # Residual around the whole GNN block (mirrors FiLMTerrain's residual):
+        # with 2 randomly-initialised GATv2 layers and no skip path, a graph
+        # signal that isn't immediately useful can actively corrupt the fused
+        # embedding rather than just contributing nothing. The residual lets
+        # message passing be learned as a correction on top of the fusion
+        # output instead of a full replacement of it.
+        x = self.norm2(x + x_in)
+
         return x

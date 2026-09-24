@@ -1,10 +1,14 @@
 """Temporal encoder — PLR Tokenising Transformer + Cross-feature Attention.
 
-Two complementary attention streams that share the same PLR embeddings:
+Three complementary streams that share the same PLR embeddings:
 
   Stream 1 — Temporal Transformer
     Self-attention across L=14 lookback days (one CLS token per day).
     Answers: *when* did the critical antecedent conditions build up?
+    Self-attention is order-agnostic except through the additive positional
+    embedding — every day can attend to every other day regardless of
+    sequence order, so directional trend (rising vs falling precipitation,
+    building vs receding antecedent moisture) is only weakly represented.
 
   Stream 2 — Cross-feature Attention
     Self-attention across F=33 feature channels (one token per feature),
@@ -12,7 +16,15 @@ Two complementary attention streams that share the same PLR embeddings:
     Answers: *which features interact* to trigger a flood?
     (e.g. "heavy rain matters more when soil is already saturated")
 
-The two CLS-pooled outputs are merged:  h = LayerNorm(h_temporal + h_feature)
+  Stream 3 — Bidirectional day-wise GRU
+    A small BiGRU walks the L=14 day tokens forward (day 1→14, oldest→most
+    recent) and backward (day 14→1) explicitly, then concatenates the final
+    forward and backward hidden states. This is a genuinely directional
+    pass (unlike attention), so it captures trend direction — e.g. "3 days
+    of climbing discharge" reads differently forward vs backward, which
+    Stream 1 alone can't cleanly express.
+
+All three CLS/pooled outputs are merged:  h = LayerNorm(h_temporal + h_feature + h_dir)
 
 This replaces the previous single-layer GRU, which could not represent
 sharp threshold-like decision boundaries on individual scalar features.
@@ -138,6 +150,15 @@ class TemporalEncoder(nn.Module):
         nn.init.trunc_normal_(self.feat_tok, std=0.02)
         nn.init.trunc_normal_(self.cls_feat, std=0.02)
 
+        # ── Stream 3: Bidirectional day-wise GRU (explicit forward/backward) ───
+        # hidden_dim // 2 per direction so concatenating both directions gives
+        # back hidden_dim, matching the other two streams for the merge sum.
+        self.dir_gru = nn.GRU(
+            input_size=hidden_dim, hidden_size=hidden_dim // 2,
+            num_layers=1, batch_first=True, bidirectional=True,
+        )
+        self.dir_norm = nn.LayerNorm(hidden_dim)
+
         # ── Merge ─────────────────────────────────────────────────────────────
         self.merge = nn.LayerNorm(hidden_dim)
         self.drop  = nn.Dropout(dropout)
@@ -153,11 +174,11 @@ class TemporalEncoder(nn.Module):
         z = self.embed(x)
 
         # ── Stream 1: Temporal ────────────────────────────────────────────────
-        tok = self.to_temp_tok(z.flatten(-2))                      # [N, L, hidden]
-        cls = self.cls_temp.expand(N, -1, -1)                      # [N, 1, hidden]
-        tok = torch.cat([cls, tok], dim=1)                         # [N, L+1, hidden]
+        tok0 = self.to_temp_tok(z.flatten(-2))                      # [N, L, hidden]
+        cls = self.cls_temp.expand(N, -1, -1)                       # [N, 1, hidden]
+        tok = torch.cat([cls, tok0], dim=1)                         # [N, L+1, hidden]
         tok = self.drop(tok + self.pos_temp[:, :tok.size(1)])
-        h_t = self.temp_enc(tok)[:, 0]                             # [N, hidden]
+        h_t = self.temp_enc(tok)[:, 0]                              # [N, hidden]
 
         # ── Stream 2: Cross-feature ───────────────────────────────────────────
         # Average out the time axis, project each feature token
@@ -166,5 +187,12 @@ class TemporalEncoder(nn.Module):
         feat = torch.cat([cls, feat], dim=1)                       # [N, F+1, hidden]
         h_f  = self.feat_enc(feat)[:, 0]                           # [N, hidden]
 
+        # ── Stream 3: Bidirectional day-wise GRU ──────────────────────────────
+        # tok0 (no CLS) walked oldest→most-recent and most-recent→oldest;
+        # concatenate the two final directional hidden states.
+        _, h_n = self.dir_gru(tok0)                                 # h_n: [2, N, hidden/2]
+        h_dir = torch.cat([h_n[0], h_n[1]], dim=-1)                 # [N, hidden]
+        h_dir = self.dir_norm(h_dir)
+
         # ── Merge: residual sum then LayerNorm ────────────────────────────────
-        return self.merge(h_t + h_f)                                # [N, hidden]
+        return self.merge(h_t + h_f + h_dir)                        # [N, hidden]
