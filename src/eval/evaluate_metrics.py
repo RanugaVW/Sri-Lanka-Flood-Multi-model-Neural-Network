@@ -40,6 +40,7 @@ from sklearn.metrics import (
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from data.dataset    import FloodDataset
+from data.batching   import _unpack, _forward, collate_snapshots
 from models.flood_model import FloodModel
 
 
@@ -171,13 +172,15 @@ def compute_paper_metrics(
         ece  = _ece(y, p)
         cont = _contingency(y, p, threshold)
 
-        # ev.det only for primary target (all others are aux)
+        # ev.det only for primary target (all others are aux).
+        # `ev_det` is scoped to this row; the episode summary below reads the
+        # primary head's value from `primary_ev`. Previously both used the same
+        # name, so the summary printed the nan left behind by the last aux row
+        # while the table printed the real number.
         ev_det = float('nan')
         if i == 0:
-            ev_info = _event_detection(p, event, day, node, threshold)
-            ev_det  = ev_info['event_detection_rate']
-            ml_days = ev_info['mean_lead_days']
-            n_ev    = ev_info['n_events']
+            primary_ev = _event_detection(p, event, day, node, threshold)
+            ev_det  = primary_ev['event_detection_rate']
 
         lines.append(
             f"{name:<18} {pr_auc:>7.4f} {roc_auc:>8.4f} {ev_det:>7.3f} "
@@ -189,9 +192,9 @@ def compute_paper_metrics(
 
     # ── Episode summary (primary target) ─────────────────────────────────────
     lines.append(f"\nEpisode detection (flood_t+1, 7-day lead window):")
-    lines.append(f"  Episodes in test set : {n_ev}")
-    lines.append(f"  Detected (ev.det)    : {ev_det:.3f}")
-    lines.append(f"  Mean lead days       : {ml_days:.1f}")
+    lines.append(f"  Episodes in test set : {primary_ev['n_events']}")
+    lines.append(f"  Detected (ev.det)    : {primary_ev['event_detection_rate']:.3f}")
+    lines.append(f"  Mean lead days       : {primary_ev['mean_lead_days']:.1f}")
     lines.append(DASH)
 
     # ── Regression sub-table ─────────────────────────────────────────────────
@@ -238,33 +241,29 @@ def evaluate_model(model, val_loader, device, output_file=None):
 
     model.eval()
     with torch.no_grad():
+        # Unpacking is shared with src/train.py so the two entry points cannot
+        # drift apart — they previously duplicated the [0]-index batch_size=1
+        # pattern, which silently pinned evaluation to one snapshot per step.
         for batch in val_loader:
-            temporal  = batch['temporal_features'][0].to(device)
-            terrain   = batch['terrain_features'][0].to(device)
-            basin_idx = batch['basin_idx'][0].to(device)
-            sar       = batch['sar_chips'][0].to(device)
-            has_sar   = batch['has_sar'][0].to(device)
-            targets   = batch['targets'][0].to(device)
-            mask      = batch['valid_mask'][0].cpu().numpy() > 0
-            ei_flow   = batch['edge_index_flow'][0].to(device)
-            ei_sp     = batch['edge_index_spatial'][0].to(device)
-            ew_sp     = batch['edge_weight_spatial'][0].to(device)
+            inp, targets, mask_t, _ = _unpack(batch, device)
+            out = _forward(model, inp)
 
-            out = model(temporal, terrain, basin_idx, sar, has_sar, ei_flow, ei_sp, ew_sp)
-
-            lg  = out['logits'].cpu().numpy()
-            reg = out['reg'].cpu().numpy()
-            tgt = targets.cpu().numpy()
-            ev  = batch['event_ids'][0].numpy()
-            day = int(batch['day_idx'][0].numpy())
+            B, N = inp['B'], inp['N']
+            mask = mask_t.cpu().numpy() > 0
+            lg   = out['logits'].cpu().numpy()
+            reg  = out['reg'].cpu().numpy()
+            tgt  = targets.cpu().numpy()
+            ev   = batch['event_ids'].reshape(B * N).numpy()
+            day  = np.repeat(batch['day_idx'].reshape(B).numpy().astype(int), N)
+            nod  = np.tile(np.arange(N), B)
 
             all_cls_logits.append(lg[mask])
             all_cls_targets.append(tgt[mask, :4].astype(int))
             all_reg_preds.append(reg[mask])
             all_reg_targets.append(tgt[mask, 4:])
             all_events.append(ev[mask])
-            all_days.append(np.full(mask.sum(), day))
-            all_nodes.append(np.where(mask)[0])
+            all_days.append(day[mask])
+            all_nodes.append(nod[mask])
 
     cls_logits  = np.concatenate(all_cls_logits)
     cls_targets = np.concatenate(all_cls_targets)
@@ -327,15 +326,22 @@ def main():
         with open(thr_path) as f:
             thr = json.load(f)['threshold']
 
+    # Only load imagery if the model config actually builds a SAR branch.
+    sar_enabled = bool((model_cfg.get('sar_cnn') or {}).get('enabled', True))
+
     val_ds = FloodDataset(
         panel_path=data_cfg['data_paths']['panel'],
         nodes_path=data_cfg['data_paths']['nodes'],
         edges_path=data_cfg['data_paths']['edges_flow'],
         split_type='val',
         scaler=scaler,
-        sar_root=data_cfg['data_paths'].get('sar_chips'),
+        sar_root=(data_cfg['data_paths'].get('sar_chips')
+                  if sar_enabled else None),
+        sar_enabled=sar_enabled,
+        truncate_after=data_cfg.get('truncate_after'),
     )
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False)
+    val_loader = DataLoader(val_ds, batch_size=16, shuffle=False,
+                            collate_fn=collate_snapshots)
 
     # Load model
     model = FloodModel(config=model_cfg).to(device)

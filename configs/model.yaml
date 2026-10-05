@@ -1,41 +1,80 @@
+# Architecture config. Every key here is now actually read by
+# src/models/flood_model.py::FloodModel.__init__ — it used to accept `config`
+# and ignore it, so this file was decorative.
+#
+# The defaults below are the HEADLINE configuration. They were chosen from
+# measured contrasts on this same panel (see ARCHITECTURE_EVOLUTION.md and the
+# sibling repo's docs/RESULTS.md §2), not from the original planning spec.
+
 temporal_encoder:
-  type: gru                 # gru | tcn | temporal_attention
-  window_days: 14            # try 7, 14, 30 as an ablation
-  hidden_dim: 128
-  num_layers: 1
+  # The real encoder is a PLR-tokenising Transformer + cross-feature attention
+  # + bidirectional day-wise GRU — NOT the GRU the old `type: gru` key implied.
+  # That key was never read; it is gone rather than left to mislead.
+  input_dim: 33
+  window_days: 14             # lookback L; try 7 / 30 as an ablation
+  hidden_dim: 128             # d_model, and the width of everything downstream
+  num_layers: 3               # temporal transformer depth
+  num_heads: 4
+  d_emb: 8                    # PLR embedding dim per feature
+  n_freq: 8                   # PLR frequency components per feature
+  feature_layers: 1           # cross-feature transformer depth
+  dropout: 0.2
 
 film_terrain:
-  input_dim: 10               # elevation, upstream_count, dist_to_outlet, zone(3), position(4) — see graph_builder.py
-  num_basins: 16               # basin identity, consumed via a learned nn.Embedding inside FiLMTerrain
+  input_dim: 10               # elevation, upstream_count, dist_to_outlet, zone(3), position(4)
+  num_basins: 16              # consumed via a learned nn.Embedding inside FiLMTerrain
   hidden_dim: 64
-  output_dim: 128            # gamma/beta each 128-dim
 
 sar_cnn:
-  enabled: true               # false = ablation without SAR
+  # OFF by default, and this is a measured decision, not an oversight.
+  # The branch was 11,209,549 of the model's 12,125,539 parameters — 92.4% of
+  # the network — for a signal that covers 9 of 51 nodes on a ~12-day revisit.
+  # The sibling project measured exactly this branch as a null twice:
+  #   M6_cnn   event PR-AUC 0.2988 vs 0.3007 without imagery, 20x the params
+  #   N6_gated below N5_bce at 17x the params
+  # Turn it on only to run the SAR ablation, and when you do, prefer
+  # freeze_backbone: true plus fusion.mode: gated.
+  enabled: false
   input_channels: 2
   input_size: 512
   embedding_dim: 64
-  backbone: resnet18_scratch
-  missing_chip_strategy: learned_embedding   # vs. zero_pad
+  backbone: resnet18_imagenet
+  freeze_backbone: true       # a ResNet-18 cannot learn "water" from a 1.9% target
+  missing_chip_strategy: learned_embedding
 
 fusion:
-  concat_dim: 320             # confirm 320 vs 192 per §2.5 note before running
+  # none   — SAR off; temporal state passes straight through the MLP
+  # gated  — image contributes g*Wv, gate conditioned on state/embedding/presence/age,
+  #          zero-init with bias -3 so the branch starts shut (use with SAR on)
+  # concat — original 192-dim concatenation (kept only for the contrast)
+  mode: none
   hidden_dim: 192
   output_dim: 128
+  dropout: 0.2
+  gate_bias: -3.0
+  sar_max_age_days: 12
 
 graph:
-  mode: single                # single | dual_branch_gated
+  # none — graph-free control
+  # flow — the 35 directed flow edges only  (DEFAULT)
+  # both — flow + the 204 spatial k-NN edges (the original setting)
+  #
+  # `flow` is the default because the spatial edges carry the measured harm:
+  # the sibling repo's paired block bootstrap put adding them at -0.0872 PR-AUC
+  # (95% CI [-0.1074, -0.0680]), while flow-on-top-of-spatial was -0.0035 with
+  # a CI spanning zero. Message passing overall cost -0.0828 PR-AUC there.
+  mode: flow
   layer: gatv2
   num_layers: 2
   heads: 4
-  spatial_edge_decay_km: 40
-  learn_edge_weights: true    # ablation: compare against fixed exp(-d/40) per HydroGAT finding
+  dropout: 0.2
+  spatial_edge_decay_km: 40   # used by graph_builder, not by the GNN
 
 heads:
   hidden_dim: 64
   outputs: [flood_t1, flood_t2, flood_t3, onset, discharge_t1, zscore_3d_max]
 
 loss:
-  focal_alpha: 0.75          # up-weights minority flood class (~2% positive rate)
-  focal_gamma: 2.0           # standard focal exponent
-  regression_weight: 0.2     # weight for Huber regression terms
+  focal_alpha: 0.75           # only used when train.yaml sets loss: focal*
+  focal_gamma: 2.0
+  regression_weight: 0.2

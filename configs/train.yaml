@@ -2,11 +2,34 @@ optimizer: adamw
 learning_rate: 1e-3
 weight_decay: 1e-4
 epochs: 60
+
+# Snapshots per optimiser step. One snapshot = one day over all 51 nodes, so
+# batch_size: 16 means a step sees 816 node-days. Training previously ran at
+# batch_size 1 (51 node-days, 5,435 steps/epoch): the val PR-AUC trace sat in
+# [0.48, 0.54] for twenty consecutive epochs with no trend, which is gradient
+# noise, not convergence. The sibling repo uses 32 full-graph snapshots.
+batch_size: 16
+
+# Linear LR warmup before the cosine decay. The pre-LN transformers and the two
+# zero-initialised gates (fusion SAR gate, GNN residual gate) are all sensitive
+# to a large first step at lr 1e-3. The sibling repo uses 5.
+warmup_epochs: 5
+
 patience: 10
 grad_clip_norm: 2.0   # was 1.0; a closely related architecture (see models/README.md
                        # in the sibling Srilanka-Flood-Data-Set-Creation repo) found the
                        # clip binding on 30-54% of steps at norm=1.0, throttling real
                        # gradient signal rather than just preventing blowups
-loss: bce          # bce | focal | focal_conf  (BCE is best on this dataset)
+
+loss: bce          # bce | focal | focal_conf
+                   # BCE is best on this dataset and the margin is measured:
+                   # the sibling repo's N3 (BCE) scored PR-AUC 0.8269 / ECE 0.0032
+                   # against N4 (focal) 0.7592 / ECE 0.0525. Focal is a defect
+                   # here, not a cost-benefit tradeoff.
+
+# Deep ensemble: probabilities are averaged across seeds BEFORE calibration.
+# A single seed has no error bar and cannot be used as one side of a claim —
+# the sibling repo measured a 0.0483 PR-AUC seed-noise floor (2 sd), which is
+# wider than most of the architecture contrasts being compared.
 seeds: [42]
 calibration: temperature

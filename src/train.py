@@ -21,6 +21,7 @@ After all seeds:
 
 import os, sys, json, time, pickle, random, argparse
 
+import math
 import numpy as np
 import yaml
 import torch
@@ -53,31 +54,9 @@ def set_seed(seed: int):
 
 # ── Batch unpacking ────────────────────────────────────────────────────────────
 
-def _unpack(batch, device):
-    """Unpack one DataLoader batch onto device.  Returns (inputs_dict, targets, mask, conf)."""
-    return (
-        {
-            'temporal':  batch['temporal_features'][0].to(device),
-            'terrain':   batch['terrain_features'][0].to(device),
-            'basin_idx': batch['basin_idx'][0].to(device),
-            'sar':       batch['sar_chips'][0].to(device),
-            'has_sar':   batch['has_sar'][0].to(device),
-            'ei_flow':   batch['edge_index_flow'][0].to(device),
-            'ei_sp':     batch['edge_index_spatial'][0].to(device),
-            'ew_sp':     batch['edge_weight_spatial'][0].to(device),
-        },
-        batch['targets'][0].to(device),
-        batch['valid_mask'][0].to(device),
-        batch['label_conf'][0].to(device),
-    )
-
-
-def _forward(model, inp):
-    return model(
-        inp['temporal'], inp['terrain'], inp['basin_idx'],
-        inp['sar'],      inp['has_sar'],
-        inp['ei_flow'],  inp['ei_sp'], inp['ew_sp'],
-    )
+from data.batching import (  # noqa: E402  (shared with eval/ and hpo)
+    collate_snapshots, _offset_edges, _unpack, _forward,
+)
 
 
 # ── One epoch ─────────────────────────────────────────────────────────────────
@@ -109,26 +88,33 @@ def validate(model, loader, criterion, device):
     tot = 0.0
     node_count = None
 
+    all_aux_logits, all_aux_labels = [], []
+
     for batch in loader:
         inp, targets, mask, conf = _unpack(batch, device)
         out = _forward(model, inp)
         lc  = criterion(out, targets, mask, conf)
         tot += lc.total.item()
 
-        # Primary head (flood_t+1 = index 0)
-        m   = mask.cpu().numpy() > 0
-        lg  = out['logits'][:, 0].cpu().numpy()
-        y   = targets[:, 0].int().cpu().numpy()
-        ev  = batch['event_ids'][0].numpy()
-        day = int(batch['day_idx'][0].numpy())
-        N   = len(m)
+        B, N = inp['B'], inp['N']
         node_count = N
+
+        m   = mask.cpu().numpy() > 0                      # [B*N]
+        lg  = out['logits'][:, 0].cpu().numpy()           # primary head
+        y   = targets[:, 0].int().cpu().numpy()
+        ev  = batch['event_ids'].reshape(B * N).numpy()
+        day = np.repeat(batch['day_idx'].reshape(B).numpy().astype(int), N)
+        nod = np.tile(np.arange(N), B)
 
         all_logits.append(lg[m])
         all_labels.append(y[m])
         all_events.append(ev[m])
-        all_days.append(np.full(m.sum(), day))
-        all_nodes.append(np.where(m)[0])
+        all_days.append(day[m])
+        all_nodes.append(nod[m])
+
+        # Heads 0..2 (flood t+1/t+2/t+3) for the selection metric
+        all_aux_logits.append(out['logits'][:, :3].cpu().numpy()[m])
+        all_aux_labels.append(targets[:, :3].int().cpu().numpy()[m])
 
     n = max(len(loader), 1)
     logits = np.concatenate(all_logits)
@@ -140,12 +126,32 @@ def validate(model, loader, criterion, device):
     except ValueError:
         pr_auc = float('nan')
 
+    # ── Selection metric: mean PR-AUC over the three flood horizons ──────────
+    # The val split (2018-2020) carries only 453 positives at a 0.81% positive
+    # rate, against 2.28% in test and 2.03% in train — so single-head val PR-AUC
+    # is both depressed (PR-AUC scales with prevalence) and very noisy, and
+    # early-stopping on it was selecting on noise. Averaging the three
+    # correlated flood horizons triples the labelled positives feeding the
+    # selection signal at no extra inference cost. The primary-head PR-AUC is
+    # still returned and still reported.
+    aux_lg = np.concatenate(all_aux_logits)
+    aux_y  = np.concatenate(all_aux_labels)
+    per_head = []
+    for i in range(aux_lg.shape[1]):
+        try:
+            per_head.append(average_precision_score(
+                aux_y[:, i], 1.0 / (1.0 + np.exp(-aux_lg[:, i]))))
+        except ValueError:
+            pass
+    select = float(np.mean(per_head)) if per_head else pr_auc
+
     collected = {
         'logit':  logits,
         'y':      labels,
         'event':  np.concatenate(all_events),
         'day':    np.concatenate(all_days),
         'node':   np.concatenate(all_nodes),
+        'select': select,
     }
     return tot / n, pr_auc, collected
 
@@ -214,11 +220,13 @@ def collect_all_heads(model, loader, device):
         reg_preds.append(out['reg'].cpu().numpy()[m])
         reg_targets.append(targets[:, 4:].cpu().numpy()[m])
 
-        ev  = batch['event_ids'][0].numpy()
-        day = int(batch['day_idx'][0].numpy())
+        B, N = inp['B'], inp['N']
+        ev  = batch['event_ids'].reshape(B * N).numpy()
+        day = np.repeat(batch['day_idx'].reshape(B).numpy().astype(int), N)
+        nod = np.tile(np.arange(N), B)
         events.append(ev[m])
-        days.append(np.full(m.sum(), day))
-        nodes.append(np.where(m)[0])
+        days.append(day[m])
+        nodes.append(nod[m])
 
     return {
         'cls_logits':  np.concatenate(cls_logits),
@@ -250,6 +258,15 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
 
     scaler_path = os.path.join(experiment_dir, 'scaler.pkl')
 
+    # SAR is only loaded if the model actually has a SAR branch. With it off,
+    # the dataset emits a 1x1 placeholder instead of a [51, 2, 512, 512]
+    # zero tensor (107 MB per snapshot) that SARCNN would never read.
+    sar_enabled = bool((model_cfg.get('sar_cnn') or {}).get('enabled', True))
+    sar_root    = data_cfg['data_paths'].get('sar_chips') if sar_enabled else None
+    # Drop the ragged trailing period (2025 has 1,092 rows vs ~18,600/complete year).
+    truncate_after = data_cfg.get('truncate_after')
+    ds_kw = dict(sar_enabled=sar_enabled, truncate_after=truncate_after)
+
     # ── Datasets ────────────────────────────────────────────────────────────
     train_ds = FloodDataset(
         panel_path=data_cfg['data_paths']['panel'],
@@ -258,7 +275,8 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
         split_type='train',
         scaler=None,
         scaler_save_path=scaler_path,
-        sar_root=data_cfg['data_paths'].get('sar_chips'),
+        sar_root=sar_root,
+        **ds_kw,
     )
     val_ds = FloodDataset(
         panel_path=data_cfg['data_paths']['panel'],
@@ -266,7 +284,8 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
         edges_path=data_cfg['data_paths']['edges_flow'],
         split_type='val',
         scaler=train_ds.scaler,
-        sar_root=data_cfg['data_paths'].get('sar_chips'),
+        sar_root=sar_root,
+        **ds_kw,
     )
     test_ds = FloodDataset(
         panel_path=data_cfg['data_paths']['panel'],
@@ -274,14 +293,18 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
         edges_path=data_cfg['data_paths']['edges_flow'],
         split_type='test',
         scaler=train_ds.scaler,
-        sar_root=data_cfg['data_paths'].get('sar_chips'),
+        sar_root=sar_root,
+        **ds_kw,
     )
 
-    # DataLoader batch_size=1: each "batch" is one full-graph snapshot
-    kw = dict(batch_size=1, num_workers=0, pin_memory=False)
-    train_loader = DataLoader(train_ds, shuffle=True,  **kw)
-    val_loader   = DataLoader(val_ds,   shuffle=False, **kw)
-    test_loader  = DataLoader(test_ds,  shuffle=False, **kw)
+    # Each sample is one full-graph day snapshot (all 51 nodes). `batch_size`
+    # snapshots are collated into one B*N-node disconnected graph, so a step
+    # sees batch_size * 51 node-days.
+    bs = int(train_cfg.get('batch_size', 16))
+    kw = dict(num_workers=0, pin_memory=False, collate_fn=collate_snapshots)
+    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True,  **kw)
+    val_loader   = DataLoader(val_ds,   batch_size=bs, shuffle=False, **kw)
+    test_loader  = DataLoader(test_ds,  batch_size=bs, shuffle=False, **kw)
 
     print(f"  Train {len(train_ds)} | Val {len(val_ds)} | Test {len(test_ds)} snapshots")
 
@@ -301,8 +324,20 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
     wd       = float(train_cfg.get('weight_decay', 1e-4))
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     epochs   = train_cfg['epochs']
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=epochs, eta_min=1e-6)
+    # Linear warmup then cosine decay, stepped per epoch. Warmup matters here
+    # because the pre-LN transformers and the two zero-initialised gates
+    # (fusion, GNN residual) are all sensitive to a large first step at lr 1e-3.
+    warmup = int(train_cfg.get('warmup_epochs', 5))
+    eta_min_frac = 1e-6 / max(lr, 1e-12)
+
+    def _lr_lambda(ep):
+        if warmup > 0 and ep < warmup:
+            return (ep + 1) / warmup
+        prog = (ep - warmup) / max(epochs - warmup, 1)
+        cos  = 0.5 * (1.0 + math.cos(math.pi * min(prog, 1.0)))
+        return eta_min_frac + (1.0 - eta_min_frac) * cos
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
     patience   = train_cfg.get('patience', 10)
     grad_clip  = float(train_cfg.get('grad_clip_norm', 1.0))
 
@@ -335,19 +370,28 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
     for epoch in range(start_epoch, epochs):
         tr_loss, tr_cls, tr_reg = train_one_epoch(
             model, train_loader, optimizer, criterion, device, grad_clip)
-        val_loss, val_pr_auc, _ = validate(
+        val_loss, val_pr_auc, val_col = validate(
             model, val_loader, criterion, device)
         scheduler.step()
 
-        is_best = val_pr_auc > best_pr_auc
+        # Select on the 3-horizon mean PR-AUC (see validate()), not on the
+        # single flood_t+1 head, whose val estimate rests on 453 positives.
+        val_select = val_col.get('select', val_pr_auc)
+        is_best = val_select > best_pr_auc
+        # A gate pinned at its initial value means that branch contributes
+        # nothing — worth seeing per-epoch rather than inferring from metrics.
+        diag = f" | g_graph {model.gnn.gate:+.3f}"
+        if getattr(model, 'sar_enabled', False):
+            diag += f" g_sar {model.fusion.last_gate_mean:.3f}"
         print(
             f"  epoch {epoch+1:>2}/{epochs} | "
             f"loss {tr_loss:.4f} (cls {tr_cls:.4f} reg {tr_reg:.4f}) | "
-            f"val pr_auc {val_pr_auc:.4f} (best {max(best_pr_auc, val_pr_auc):.4f})"
+            f"val sel {val_select:.4f} pr_auc {val_pr_auc:.4f} "
+            f"(best {max(best_pr_auc, val_select):.4f})" + diag
         )
 
         if is_best:
-            best_pr_auc    = val_pr_auc
+            best_pr_auc    = val_select
             best_epoch     = epoch
             patience_count = 0
             save_checkpoint(model, ckpt_dir, seed)
@@ -378,7 +422,8 @@ def run_single_seed(seed, data_cfg, train_cfg, model_cfg, device, experiment_dir
     print(f"\n  Elapsed: {elapsed:.1f}s  |  Best epoch: {best_epoch+1}")
 
     # ── Load best checkpoint → collect val + test logits ────────────────────
-    print(f"  [eval] Loading best model (epoch {best_epoch+1}, PR-AUC {best_pr_auc:.4f}) for inference...")
+    print(f"  [eval] Loading best model (epoch {best_epoch+1}, "
+          f"val sel {best_pr_auc:.4f}) for inference...")
     model.load_state_dict(torch.load(
         os.path.join(ckpt_dir, 'best_model.pth'),
         map_location=device, weights_only=True))
