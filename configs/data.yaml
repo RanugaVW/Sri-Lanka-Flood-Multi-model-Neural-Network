@@ -12,10 +12,16 @@ data_paths:
 # actually contain (verified against the parquet directly), not a knob you
 # can turn here — to change the real split, the parquet's split column has
 # to be regenerated upstream.
+# Drop a ragged trailing period before anything else sees it. 2025 contributes
+# 1,092 valid rows against ~18,600 for every complete year, so leaving it in the
+# test split folds a 3-week sliver into a 4-year average invisibly. The sibling
+# repo applies the same 2024-12-31 cutoff as its documented ragged-2025 policy.
+truncate_after: "2024-12-31"
+
 splits:
   temporal:
     train_years: [2003, 2017]   # inclusive range, not an enumerated list
     val_years: [2018, 2020]
-    test_years: [2021, 2025]
+    test_years: [2021, 2024]   # 2025 excluded by truncate_after above
   basin_holdout:
     holdout_basin: "Gin"

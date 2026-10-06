@@ -70,8 +70,13 @@ O(1) sliding-window slicing, and returns per `__getitem__`:
 - `targets [N, 6]`, `valid_mask [N]`, `label_conf [N]`, `event_ids [N]`, plus the static
   `edge_index_flow` / `edge_index_spatial` / `edge_weight_spatial`.
 
-`DataLoader` always runs with `batch_size=1` — each "batch" *is* one graph snapshot (all 51 nodes), so
-`train.py::_unpack` immediately does `batch[key][0]` to drop the fake batch dimension. Splits come entirely from
+`DataLoader` runs with `batch_size` from `configs/train.yaml` (default **16**). One sample is one graph
+snapshot (all 51 nodes); `src/data/batching.py::collate_snapshots` stacks B of them into a single B*51-node
+disconnected graph and `_unpack` flattens `[B, N, ...] → [B*N, ...]`, offsetting the edge indices
+block-diagonally. Those helpers live in `data/batching.py` rather than `train.py` because `train.py`,
+`src/eval/evaluate_metrics.py` and `src/hpo.py` all import them and `train.py` already imports from
+`evaluate_metrics` (a cycle otherwise). It was `batch_size=1` with `batch[key][0]` through A6.
+`configs/data.yaml: truncate_after: "2024-12-31"` drops the ragged 2025 tail before anything else sees it. Splits come entirely from
 a precomputed `split_temporal` column baked into the parquet (train=2003–2017, val=2018–2020, test=2021–2025) —
 `dataset.py` never reads `configs/data.yaml`'s `splits:` block, which is informational-only documentation of
 those same ranges, not a live knob. A `split_basin_holdout` column exists for a second protocol (holdout basin
@@ -101,21 +106,34 @@ sar_chips, has_sar ──────────────► SARCNN ──�
 - **FiLMTerrain**: concatenates the 10-dim terrain vector with an 8-dim learned basin embedding (looked up via
   `basin_idx`), then `Linear(18,64)→ReLU→Dropout→Linear(64,256)` → gamma/beta, applied as
   `LayerNorm(gamma*h + beta + h)` (residual, so a degenerate FiLM branch can't erase the temporal signal).
-- **SARCNN**: `InstanceNorm2d` (per-chip, unit-agnostic — replaced a bug-prone hardcoded dB normalization) →
-  3×3 avg-pool despeckle → 1×1 conv to 3 channels → pretrained ResNet-18 → `Linear→LayerNorm` to 64-dim.
-  Missing chips get a learned `nn.Parameter` embedding, never zero-padding.
-- **FusionBlock**: concatenates the 128-dim FiLM output with the 64-dim SAR embedding (192-dim total — the
-  spec's 320-dim double-counting-terrain option was deliberately rejected, see comment in `fusion.py`) →
-  `Linear→ReLU→Dropout(0.2)→Linear→LayerNorm` (no trailing ReLU — negative dims are needed downstream).
-- **GraphGNN**: flow edges (weight=1.0) and spatial edges (weight=`exp(-distance_km/40)`) are concatenated
-  into one adjacency and run through 2 stacked `GATv2Conv` layers (4 heads), each followed by
-  `LayerNorm`(+`Dropout(0.2)` after layer 1), with a **residual connection around the whole block**
-  (`LayerNorm(gnn_out + fusion_in)`) — mirrors `FiLMTerrain`'s residual rationale: with 2
-  randomly-initialized GATv2 layers and no skip path, a graph signal that isn't immediately useful can
-  actively corrupt the fused embedding instead of just contributing nothing. Added after a sibling project
-  on the same dataset (`Srilanka-Flood-Data-Set-Creation`) found its graph-based model underperforming its
-  graph-free one (PR-AUC 0.742 vs 0.8355) — the residual doesn't remove the graph, it just lets training
-  learn to discount it if message passing isn't earning its place.
+- **SARCNN**: **off by default** (`sar_cnn.enabled: false`) — it was 11,209,549 of the model's 12,125,539
+  parameters (92.4%) for a signal reaching 9 of 51 nodes on a ~12-day revisit, and the sibling project
+  measured this exact branch as a null twice (`M6_cnn` event PR-AUC 0.2988 vs 0.3007 *without* imagery;
+  `N6_gated` below `N5_bce` at 17× the params). With it off, `FloodModel.sar_cnn is None` and the dataset
+  emits a `[N,2,1,1]` placeholder instead of allocating and copying 107 MB of zeros per snapshot.
+  When enabled: `InstanceNorm2d` (per-chip, unit-agnostic — replaced a bug-prone hardcoded dB normalization)
+  → 3×3 avg-pool despeckle → 1×1 conv to 3 channels → pretrained ResNet-18 (`freeze_backbone: true` by
+  default) → `Linear→LayerNorm` to 64-dim. Missing chips get a learned `nn.Parameter` embedding, never
+  zero-padding — though in `gated` fusion the presence multiplier zeroes the branch anyway.
+- **FusionBlock**: three modes via `fusion.mode`. **`none`** (headline default, SAR off) passes the 128-dim
+  FiLM output straight through `Linear→ReLU→Dropout(0.2)→Linear→LayerNorm`. **`gated`** adds the SAR
+  embedding as `g ⊙ Wv ⊙ pres`, where the gate is computed from state ∥ embedding ∥ presence ∥ **frame age**
+  and is zero-initialised with bias −3, so the branch starts shut and is an exact no-op when no chip exists.
+  **`concat`** is the old 192-dim concatenation, kept only so the contrast is runnable. No trailing ReLU —
+  negative dims are needed downstream.
+- **GraphGNN**: `graph.mode` selects **`none`** (no message passing, zero GNN params), **`flow`**
+  (headline default — the 35 directed flow edges only), or **`both`** (flow + the 204
+  `exp(-distance_km/40)`-weighted spatial edges, the pre-A7 behaviour). Edges run through 2 stacked
+  `GATv2Conv` layers (4 heads), each followed by `LayerNorm` (+`Dropout(0.2)` after layer 1), with a
+  **residual gated by a learned scalar**: `LayerNorm(x_in + tanh(alpha) * gnn_out)`, `alpha` initialised to
+  **0**. So at init the block is *exactly* the identity and the graph is opt-in — read `model.gnn.gate`
+  (printed per epoch) to see whether training ever opened it.
+  This is deliberate, and the reason is measured. A sibling project on the same panel
+  (`Srilanka-Flood-Data-Set-Creation`, `docs/RESULTS.md` §2) ran the graph as the only moving part and found
+  message passing **costs** 0.0828 PR-AUC (Δ = −0.0828, 95% CI [−0.1003, −0.0668], p = 0.000). The 204
+  spatial edges carry nearly all of that (Δ = −0.0872, CI [−0.1074, −0.0680]); the 35 flow edges are
+  neutral (Δ = −0.0035, CI spans zero) — which is why `flow` is the default rather than `both`. The pre-A7
+  un-gated residual let training *discount* the graph but never switch it off.
 - **OutputHeads**: separate `Linear→GELU→Dropout→Linear` MLPs for 4 classification logits
   (`flood_t+1/t+2/t+3`, `onset`) and 2 regression outputs (`discharge_t+1`, `3-day max z-score`). Returns
   **raw logits**, never sigmoid — calibration happens post-hoc in `train.py`, and `BCEWithLogitsLoss` needs
@@ -132,8 +150,18 @@ dB-scale SAR normalization that assumed the wrong units).
   on this dataset (`configs/train.yaml` comment: BCE PR-AUC 0.8269 vs focal 0.7592). Focal/`focal_conf`
   variants exist but are opt-in via `train.yaml: loss:`. Head weights are fixed:
   `flood_t+1=1.0, flood_t+2=0.3, flood_t+3=0.3, onset=0.5`. Regression uses Huber loss, weighted 0.2.
-- Early stopping is on **val PR-AUC of flood_t+1**, not loss (loss can improve while PR-AUC collapses at
-  ~2% positive rate — this is documented behavior, not a bug to "fix").
+- Early stopping is on the **mean val PR-AUC over flood_t+1/t+2/t+3**, never loss (loss can improve while
+  PR-AUC collapses at ~2% positive rate — documented behavior, not a bug to "fix"). The three horizons are
+  averaged because the val split (2018–2020) holds only **453 positives at a 0.81% rate**, against 2.28% in
+  test and 2.03% in train — a 2.8× prevalence trough. PR-AUC scales with prevalence, so val numbers are both
+  depressed *and* very noisy relative to test: the A6 run's val trace sat in [0.48, 0.54] for twenty
+  consecutive epochs with no trend. `validate()` returns both the 3-horizon `select` score and t+1 alone.
+- **Open caveat, not solved:** temperature and the max-F1 threshold are still fitted on that same
+  0.81%-prevalence window to predict a 2.28% one. The sibling repo hit this from the other side —
+  calibrating on 2020 alone *worsened* its Brier (0.00718 → 0.00772). The real fix is a split-protocol
+  change, not a threshold tweak; don't "improve" it by searching thresholds against the test score.
+- `configs/train.yaml: warmup_epochs` (default 5) gives a linear LR warmup before the cosine decay — the
+  pre-LN transformers and the two zero-init gates are sensitive to a large first step at lr 1e-3.
 - `configs/train.yaml: seeds:` drives a multi-seed deep ensemble — probabilities are averaged across seeds
   *before* calibration.
 - Calibration (temperature scaling) and threshold selection (max-F1 on val) both live inline in `train.py`
@@ -153,11 +181,17 @@ the ~2% positive rate makes it meaningless (this is called out explicitly in `Do
 
 ### Configs
 
-Four YAMLs are all read independently by each entry point (not composed): `configs/data.yaml` (local paths +
-split years) / `configs/kaggle_data.yaml` (Kaggle-mounted dataset paths — placeholders need updating to your
-actual mount), `configs/model.yaml` (architecture dims — note many of `TemporalEncoder`'s real hyperparameters,
-e.g. transformer depth/heads, are hardcoded in `temporal_encoder.py`'s constructor defaults and not actually
-threaded through `model.yaml`), `configs/train.yaml` (optimizer/loss/seeds). `configs/experiments/` is empty —
+Four YAMLs are all read independently by each entry point (not composed): `configs/data.yaml` (local paths,
+split years, `truncate_after`) / `configs/kaggle_data.yaml` (Kaggle-mounted dataset paths — placeholders need
+updating to your actual mount), `configs/model.yaml` (architecture), `configs/train.yaml`
+(optimizer/loss/batch_size/warmup/seeds).
+
+**`configs/model.yaml` is now actually read.** Through A6, `FloodModel.__init__` accepted `config` and
+ignored it — every submodule used its constructor defaults, so `sar_cnn.enabled: false` and
+`graph.num_layers` changed nothing and any ablation "configured" there silently ran the same model. Every
+key is now threaded to its submodule, so these are real knobs. The headline-relevant ones are
+`sar_cnn.enabled`, `fusion.mode` (`none|gated|concat`) and `graph.mode` (`none|flow|both`);
+`tests/test_forward_pass.py` asserts each of those actually changes the built model. `configs/experiments/` is empty —
 the per-workpackage ablation configs described in `ARCHITECTURE_SPEC.md` (`wp2_baselines.yaml` etc.) were never
 created; workpackage results instead live as loose files under `experiments/wp*/`.
 
@@ -194,3 +228,24 @@ prefer it, then the source, over `README.md`/`ARCHITECTURE_SPEC.md` for anything
   `pytest tests/test_forward_pass.py` and direct execution.
 - `src/calibration/` and `configs/experiments/` are effectively empty (see above) — don't assume code lives
   there just because the spec docs say it should.
+- ~~`FloodModel` ignored `configs/model.yaml` entirely~~ — **fixed**, see Configs above.
+- ~~`ev.det` printed `nan` in the episode summary~~ — **fixed.** The table showed the real value (0.173)
+  while the summary showed `nan`: `ev_det` was both the per-row loop variable and the summary's source, so
+  the last auxiliary head's `nan` overwrote it. The primary head's dict is now held separately.
+- ~~`src/hpo.py` tuned the wrong model against the wrong objective~~ — **fixed.** It hand-rolled a duplicate
+  `TrialFloodModel` (which could not see `fusion.mode`, `graph.mode`, `sar_cnn.enabled` or the gated SAR
+  branch) and **minimised validation loss** — the exact signal this file documents as wrong at a 2% positive
+  rate. It now builds the real `FloodModel` from an overridden config dict and maximises the 3-horizon mean
+  val PR-AUC via the shared `validate()`.
+- **Still open — the val prevalence trough.** See the calibration caveat above. This is the largest known
+  unfixed problem and it is a split-protocol question, not a modelling one.
+- **Single seed.** `seeds: [42]` has no error bar. The sibling repo measured a **0.0483 PR-AUC** seed-noise
+  floor (2 sd over 2000 bootstrap draws) — wider than most architecture contrasts worth making here. Treat
+  any single-seed difference below ~0.05 PR-AUC as unresolved, and run 3–5 seeds before claiming anything.
+- **Onset is broken everywhere, not just here** (our PR-AUC 0.0533, POD 0.000). The sibling's best onset AP
+  is 0.2225 and LightGBM's 0.2061; its constrained early-warning policies warn on 2 of 355 event starts.
+  Likely a label-definition limit rather than a capacity one — don't expect an architecture change to fix it.
+- **Reference point for "is this good?":** on this same panel, LightGBM scores **0.8606** 24h AP, the
+  sibling's graph-free 711k-param tabular net **0.8355**, and a plain discharge-percentile rule **0.8164**.
+  Our A6 run scored **0.6625** (test, flood t+1). Any new number should be read against those, and
+  `Docs/MODEL4_RESULTS.md` in the sibling repo is the matched-protocol comparison worth copying.

@@ -14,3 +14,6 @@ data_paths:
   # Mounts at: /kaggle/input/datasets/uom230429e/flood-data-set/
   # Structure inside: sar_flood_ds/frames/<SITE_ID>/<YYYY-MM-DD>.png
   sar_chips: /kaggle/input/datasets/uom230429e/flood-data-set/sar_flood_ds
+
+# Ragged-2025 policy — see configs/data.yaml for the rationale.
+truncate_after: "2024-12-31"

@@ -104,7 +104,7 @@ class SARIndex:
     def get_chip(self, node_id: str, query_date: pd.Timestamp):
         entries = self.index.get(node_id)
         if not entries:
-            return None, False
+            return None, False, float(self.max_age_days)
         dates = [e[0] for e in entries]
         idx   = np.searchsorted(dates, query_date)
         candidates = []
@@ -114,8 +114,8 @@ class SARIndex:
             candidates.append((abs((dates[idx - 1] - query_date).days), entries[idx - 1][1]))
         best_days, best_path = min(candidates, key=lambda c: c[0])
         if best_days > self.max_age_days:
-            return None, False
-        return _decode_sar_png(best_path), True
+            return None, False, float(self.max_age_days)
+        return _decode_sar_png(best_path), True, float(best_days)
 
 
 # ── Main dataset ──────────────────────────────────────────────────────────────
@@ -186,12 +186,19 @@ class FloodDataset(Dataset):
         sar_root:         str   = None,
         sar_max_age_days: int   = 12,
         sar_chip_size:    int   = 512,
+        sar_enabled:      bool  = True,
+        truncate_after:   str   = None,
     ):
         self.split_type   = split_type
         self.window_days  = window_days
         self.sar_chip_size = sar_chip_size
         self._sar_root    = sar_root
         self._sar_max_age_days = sar_max_age_days
+        # When SAR is off we must not allocate the [N, 2, 512, 512] chip tensor
+        # at all: zero-filling and host->device-copying 107 MB per snapshot costs
+        # more wall-clock than the rest of the forward pass combined, even though
+        # SARCNN would discard every value of it.
+        self.sar_enabled  = bool(sar_enabled) and sar_root is not None
 
         # ── Load full panel (unfiltered) ──────────────────────────────────────
         print(f"Loading {panel_path}...")
@@ -243,6 +250,19 @@ class FloodDataset(Dataset):
         else:
             split_df = full_df.copy()
 
+        # ── Drop a ragged trailing period (e.g. a partial final year) ─────────
+        # 2025 contributes 1,092 rows against ~18,600 for every complete year;
+        # leaving it in the test split mixes a 3-week sliver into a 4-year
+        # average without being visible in any reported number.
+        if truncate_after is not None:
+            _n0 = len(split_df)
+            split_df = split_df[
+                pd.to_datetime(split_df['date']) <= pd.Timestamp(truncate_after)
+            ].copy()
+            if len(split_df) != _n0:
+                print(f"  truncate_after={truncate_after}: "
+                      f"dropped {_n0 - len(split_df)} of {_n0} {split_type} rows.")
+
         # ── Static graph ──────────────────────────────────────────────────────
         self.nodes_df = pd.read_csv(nodes_path)
         self.edges_df = pd.read_csv(edges_path)
@@ -250,7 +270,7 @@ class FloodDataset(Dataset):
 
         # ── SAR index — one sub-index per node_id that has its own SAR site ────
         self.sar_index = SARIndex(
-            self._sar_root,
+            self._sar_root if self.sar_enabled else None,
             site_ids=self.nodes_df['node_id'].tolist(),
             max_age_days=self._sar_max_age_days,
         )
@@ -347,17 +367,25 @@ class FloodDataset(Dataset):
         # chip within max_age_days get a real chip, the rest stay zero/False.
         query_date = pd.Timestamp(self.unique_dates[d])
         N   = len(self.unique_nodes)
-        sar = torch.zeros((N, 2, self.sar_chip_size, self.sar_chip_size),
-                          dtype=torch.float32)
+        px  = self.sar_chip_size if self.sar_enabled else 1
+        sar = torch.zeros((N, 2, px, px), dtype=torch.float32)
         has_sar = torch.zeros(N, dtype=torch.bool)
+        # Age in days of each node's nearest usable chip. Saturated at
+        # sar_max_age_days where there is none, so the value is always finite and
+        # the gate sees "stale/absent" rather than a sentinel it has to decode.
+        sar_age = torch.full((N,), float(self._sar_max_age_days),
+                             dtype=torch.float32)
 
-        for i, node_id in self._sar_node_idx:
-            chip_arr, has_chip = self.sar_index.get_chip(node_id, query_date)
-            if not has_chip or chip_arr is None:
-                continue
-            chip_arr = self._resize_chip(chip_arr)
-            sar[i]     = torch.tensor(chip_arr)
-            has_sar[i] = True
+        if self.sar_enabled:
+            for i, node_id in self._sar_node_idx:
+                chip_arr, has_chip, age_days = self.sar_index.get_chip(
+                    node_id, query_date)
+                if not has_chip or chip_arr is None:
+                    continue
+                chip_arr = self._resize_chip(chip_arr)
+                sar[i]     = torch.tensor(chip_arr)
+                has_sar[i] = True
+                sar_age[i] = age_days
 
         return {
             'temporal_features':    temporal,
@@ -365,6 +393,7 @@ class FloodDataset(Dataset):
             'basin_idx':            self.static_graph.basin_idx,
             'sar_chips':            sar,
             'has_sar':              has_sar,
+            'sar_age_days':         sar_age,
             'targets':              targets,
             'valid_mask':           valid_mask,
             'label_conf':           label_conf,
